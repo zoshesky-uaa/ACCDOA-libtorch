@@ -1,30 +1,117 @@
 ﻿# CMakeList.txt : CMake project for ACCDOA-libtorch, include source and define
 # project specific logic here.
+cmake_minimum_required(VERSION 3.24 FATAL_ERROR)
+set(CMAKE_CUDA_FLAGS "${CMAKE_CUDA_FLAGS} -allow-unsupported-compiler")
+project (ACCDOA-libtorch LANGUAGES CXX CUDA)
 
-cmake_minimum_required(VERSION 3.18 FATAL_ERROR)
-project (ACCDOA-libtorch)
+set(CMAKE_CXX_STANDARD 20)
+set(CMAKE_CXX_STANDARD_REQUIRED ON)
+set(CMAKE_CXX_EXTENSIONS OFF)
 
+# Torch setup
+list(APPEND CMAKE_PREFIX_PATH "${CMAKE_CURRENT_SOURCE_DIR}/external/libtorch")
 find_package(Torch REQUIRED)
-set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} ${TORCH_CXX_FLAGS}")
 
-add_executable(ACCDOA-libtorch "ACCDOA-libtorch.cpp" "ACCDOA-libtorch.h")
-target_link_libraries(ACCDOA-libtorch "${TORCH_LIBRARIES}")
-set_property(TARGET ACCDOA-libtorch PROPERTY CXX_STANDARD 20)
+# Have to force avx2 because Ryzen 7000 CPU
+set(KFR_ARCH "avx2" CACHE STRING "" FORCE)
+set(KFR_ENABLE_TESTS OFF CACHE BOOL "" FORCE)
 
-# The following code block is suggested to be used on Windows.
-# According to https://github.com/pytorch/pytorch/issues/25457,
-# the DLLs need to be copied to avoid memory errors.
+include(FetchContent)
+# xtl (required by xtensor)
+FetchContent_Declare(
+  xtl
+  GIT_REPOSITORY https://github.com/xtensor-stack/xtl.git
+  GIT_TAG        master
+  OVERRIDE_FIND_PACKAGE
+)
+FetchContent_MakeAvailable(xtl)
+
+# xsimd (required by xtensor)
+FetchContent_Declare(
+  xsimd
+  GIT_REPOSITORY https://github.com/xtensor-stack/xsimd.git
+  GIT_TAG        master
+  OVERRIDE_FIND_PACKAGE
+)
+FetchContent_MakeAvailable(xsimd)
+
+# xtensor
+FetchContent_Declare(
+  xtensor
+  GIT_REPOSITORY https://github.com/xtensor-stack/xtensor
+  GIT_TAG        master
+  OVERRIDE_FIND_PACKAGE
+)
+FetchContent_MakeAvailable(xtensor)
+
+# nlohmann_json (required by z5)
+FetchContent_Declare(
+  nlohmann_json
+  GIT_REPOSITORY https://github.com/nlohmann/json.git
+  GIT_TAG       master
+  OVERRIDE_FIND_PACKAGE
+)
+
+# zlib (required by z5)
+FetchContent_Declare(
+  ZLIB
+  GIT_REPOSITORY https://github.com/madler/zlib.git
+  GIT_TAG        master
+  OVERRIDE_FIND_PACKAGE
+)
+FetchContent_MakeAvailable(ZLIB)
+
+# KFR
+FetchContent_Declare(
+  kfr
+  GIT_REPOSITORY https://github.com/kfrlib/kfr.git
+  GIT_TAG        main
+)
+FetchContent_MakeAvailable(kfr)
+
+# miniaudio
+FetchContent_Declare(
+  miniaudio
+  GIT_REPOSITORY https://github.com/mackron/miniaudio.git
+  GIT_TAG        master
+)
+FetchContent_MakeAvailable(miniaudio)
+
+# z5
+set(BUILD_Z5PY OFF CACHE BOOL "" FORCE)
+FetchContent_Declare(
+  z5
+  GIT_REPOSITORY https://github.com/constantinpape/z5
+  GIT_TAG        master
+)
+FetchContent_MakeAvailable(z5)
+
+add_executable(ACCDOA-libtorch 
+    ACCDOA-libtorch.cpp 
+    ACCDOA-libtorch.h
+)
+
+set_property(TARGET ACCDOA-libtorch PROPERTY COMPILE_FLAGS "${TORCH_CXX_FLAGS}")
+target_link_libraries(ACCDOA-libtorch PRIVATE 
+    kfr
+    miniaudio
+    z5
+    xtensor
+    ${TORCH_LIBRARIES}
+)
+
 if (MSVC)
-  file(GLOB TORCH_DLLS "${TORCH_INSTALL_PREFIX}/lib/*.dll")
-  add_custom_command(TARGET example-app
-                     POST_BUILD
-                     COMMAND ${CMAKE_COMMAND} -E copy_if_different
-                     ${TORCH_DLLS}
-                     $<TARGET_FILE_DIR:example-app>)
-endif (MSVC)
+    # Copy LibTorch DLLs to the output directory so the .exe can find them at runtime
+    file(GLOB TORCH_DLLS "${TORCH_INSTALL_PREFIX}/lib/*.dll")
+    add_custom_command(TARGET ACCDOA-libtorch POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different
+        ${TORCH_DLLS}
+        $<TARGET_FILE_DIR:ACCDOA-libtorch>
+    )
 
-# Enable Hot Reload for MSVC compilers if supported.
-if (POLICY CMP0141)
-  cmake_policy(SET CMP0141 NEW)
-  set(CMAKE_MSVC_DEBUG_INFORMATION_FORMAT "$<IF:$<AND:$<C_COMPILER_ID:MSVC>,$<CXX_COMPILER_ID:MSVC>>,$<$<CONFIG:Debug,RelWithDebInfo>:EditAndContinue>,$<$<CONFIG:Debug,RelWithDebInfo>:ProgramDatabase>>")
+    # Enable Hot Reload (Edit and Continue)
+    if (POLICY CMP0141)
+        cmake_policy(SET CMP0141 NEW)
+        set(CMAKE_MSVC_DEBUG_INFORMATION_FORMAT "$<IF:$<AND:$<C_COMPILER_ID:MSVC>,$<CXX_COMPILER_ID:MSVC>>,$<$<CONFIG:Debug,RelWithDebInfo>:EditAndContinue>,$<$<CONFIG:Debug,RelWithDebInfo>:ProgramDatabase>>")
+    endif()
 endif()

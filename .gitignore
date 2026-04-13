@@ -1,5 +1,4 @@
 /out
-/libtorch
 .vs
-/z5
 /zarr-files
+/external
