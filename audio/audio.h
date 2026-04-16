@@ -1,7 +1,9 @@
 #pragma once
+#define MINIAUDIO_IMPLEMENTATION
+#include <miniaudio.h>
 #include <stdlib.h>
 #include <stdio.h>
-#include <miniaudio.h>
+
 
 enum class DeviceType {
 	Playback,
@@ -10,14 +12,9 @@ enum class DeviceType {
 
 class AudioDevice {
 	private:
-		const ma_format sample_format = ma_format_f32;
-		const ma_uint32 sample_rate = 16000;
-		const ma_uint32 channels = 4;
-		int framelimit;
 		ma_pcm_rb ringBuffer;
 		ma_context context;
-		ma_device device;
-
+		
 		static void playback_data_callback(ma_device* pDevice, void* pOutput, const void* pInput, ma_uint32 frameCount) {
 
 		};
@@ -54,6 +51,12 @@ class AudioDevice {
 			}
 		};
 	public:		
+		const ma_uint32 channels = 4;
+		const ma_format sample_format = ma_format_f32;
+		const ma_uint32 sample_rate = 16000;
+		ma_device device;
+		int framelimit;
+
 		AudioDevice(DeviceType device_type, char* device_name, int tick_rate) {
 			// Force WASAPI backend 
 			ma_backend backends[] = { ma_backend_wasapi };
@@ -66,7 +69,7 @@ class AudioDevice {
 			ma_device_info* pPlaybackDevices;
 			ma_uint32 playbackDeviceCount;
 
-			ma_result r = ma_context_get_devices(&context,
+			r = ma_context_get_devices(&context,
 				&pPlaybackDevices,
 				&playbackDeviceCount,
 				&pCaptureDevices,
@@ -117,7 +120,7 @@ class AudioDevice {
 			deviceConfig.periodSizeInFrames = framelimit;
 
 			// Configuration default, match your microphone settings to match else it will not work.
-			ma_result r = ma_pcm_rb_init(
+			r = ma_pcm_rb_init(
 				sample_format,
 				channels,
 				(framelimit * 64),
@@ -143,7 +146,7 @@ class AudioDevice {
 			deviceConfig.wasapi.noDefaultQualitySRC = MA_TRUE;   // Use highest quality resampling  
 			deviceConfig.wasapi.usage = ma_wasapi_usage_pro_audio; // Set thread priority for pro audio
 
-			ma_result r = ma_device_init(&context, &deviceConfig, &device);
+			r = ma_device_init(&context, &deviceConfig, &device);
 			if (r != MA_SUCCESS) {
 				ma_context_uninit(&context);
 				throw std::runtime_error("Failed to initialize device: " + std::to_string(r));

@@ -4,6 +4,7 @@ cmake_minimum_required(VERSION 3.24 FATAL_ERROR)
 set(CMAKE_CUDA_FLAGS "${CMAKE_CUDA_FLAGS} -allow-unsupported-compiler")
 project (ACCDOA-libtorch LANGUAGES CXX CUDA)
 
+add_definitions(-DKFR_NO_CUDA_EXTENSIONS)
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
@@ -14,76 +15,31 @@ find_package(Torch REQUIRED)
 
 # Have to force avx2 because Ryzen 7000 CPU
 set(KFR_ARCH "avx2" CACHE STRING "" FORCE)
-set(KFR_ENABLE_TESTS OFF CACHE BOOL "" FORCE)
+set(KFR_ENABLE_MULTIARCH OFF CACHE BOOL "" FORCE)
 
 include(FetchContent)
-# xtl (required by xtensor)
-FetchContent_Declare(
-  xtl
-  GIT_REPOSITORY https://github.com/xtensor-stack/xtl.git
-  GIT_TAG        master
-  OVERRIDE_FIND_PACKAGE
-)
-FetchContent_MakeAvailable(xtl)
+# xtensor and dependencies
+FetchContent_Declare(xtl GIT_REPOSITORY https://github.com/xtensor-stack/xtl.git GIT_TAG master OVERRIDE_FIND_PACKAGE)
+FetchContent_Declare(xsimd GIT_REPOSITORY https://github.com/xtensor-stack/xsimd.git GIT_TAG master OVERRIDE_FIND_PACKAGE)
+FetchContent_Declare(xtensor GIT_REPOSITORY https://github.com/xtensor-stack/xtensor GIT_TAG master OVERRIDE_FIND_PACKAGE)
+FetchContent_MakeAvailable(xtl xsimd xtensor)
 
-# xsimd (required by xtensor)
-FetchContent_Declare(
-  xsimd
-  GIT_REPOSITORY https://github.com/xtensor-stack/xsimd.git
-  GIT_TAG        master
-  OVERRIDE_FIND_PACKAGE
-)
-FetchContent_MakeAvailable(xsimd)
+# z5 dependencies
+FetchContent_Declare(nlohmann_json GIT_REPOSITORY https://github.com/nlohmann/json.git GIT_TAG master OVERRIDE_FIND_PACKAGE)
+FetchContent_Declare(ZLIB GIT_REPOSITORY https://github.com/madler/zlib.git GIT_TAG master OVERRIDE_FIND_PACKAGE)
+FetchContent_MakeAvailable(nlohmann_json ZLIB)
 
-# xtensor
-FetchContent_Declare(
-  xtensor
-  GIT_REPOSITORY https://github.com/xtensor-stack/xtensor
-  GIT_TAG        master
-  OVERRIDE_FIND_PACKAGE
-)
-FetchContent_MakeAvailable(xtensor)
-
-# nlohmann_json (required by z5)
-FetchContent_Declare(
-  nlohmann_json
-  GIT_REPOSITORY https://github.com/nlohmann/json.git
-  GIT_TAG       master
-  OVERRIDE_FIND_PACKAGE
-)
-
-# zlib (required by z5)
-FetchContent_Declare(
-  ZLIB
-  GIT_REPOSITORY https://github.com/madler/zlib.git
-  GIT_TAG        master
-  OVERRIDE_FIND_PACKAGE
-)
-FetchContent_MakeAvailable(ZLIB)
-
-# KFR
-FetchContent_Declare(
-  kfr
-  GIT_REPOSITORY https://github.com/kfrlib/kfr.git
-  GIT_TAG        main
-)
+# kfr
+FetchContent_Declare(kfr GIT_REPOSITORY https://github.com/kfrlib/kfr.git GIT_TAG main)
 FetchContent_MakeAvailable(kfr)
 
 # miniaudio
-FetchContent_Declare(
-  miniaudio
-  GIT_REPOSITORY https://github.com/mackron/miniaudio.git
-  GIT_TAG        master
-)
+FetchContent_Declare(miniaudio GIT_REPOSITORY https://github.com/mackron/miniaudio.git GIT_TAG master)
 FetchContent_MakeAvailable(miniaudio)
 
 # z5
 set(BUILD_Z5PY OFF CACHE BOOL "" FORCE)
-FetchContent_Declare(
-  z5
-  GIT_REPOSITORY https://github.com/constantinpape/z5
-  GIT_TAG        master
-)
+FetchContent_Declare(z5 GIT_REPOSITORY https://github.com/constantinpape/z5 GIT_TAG master)
 FetchContent_MakeAvailable(z5)
 
 add_executable(ACCDOA-libtorch 
@@ -91,7 +47,13 @@ add_executable(ACCDOA-libtorch
     ACCDOA-libtorch.h
 )
 
+set_target_properties(ACCDOA-libtorch PROPERTIES
+    CXX_STANDARD 20
+    CXX_STANDARD_REQUIRED ON
+)
+
 set_property(TARGET ACCDOA-libtorch PROPERTY COMPILE_FLAGS "${TORCH_CXX_FLAGS}")
+
 target_link_libraries(ACCDOA-libtorch PRIVATE 
     kfr
     miniaudio
@@ -101,7 +63,20 @@ target_link_libraries(ACCDOA-libtorch PRIVATE
 )
 
 if (MSVC)
-    # Copy LibTorch DLLs to the output directory so the .exe can find them at runtime
+    target_compile_definitions(ACCDOA-libtorch PRIVATE 
+        NOMINMAX             # Kills the min/max macros globally
+        _USE_MATH_DEFINES    # Ensures M_PI is available
+        KFR_BASETYPE_F32
+    )
+
+    target_compile_options(ACCDOA-libtorch PRIVATE 
+        /arch:AVX2        # Tell MSVC it's allowed to understand KFR's AVX2 intrinsics
+        /Zc:__cplusplus   # Some force for MSVC to set __cplusplus to the correct value
+        /utf-8               # Fixes the Character Encoding warning (C4819)
+        /bigobj              # Handles complex template bloat from Torch/KFR
+    )
+
+     # Copy LibTorch DLLs to the output directory so the .exe can find them at runtime
     file(GLOB TORCH_DLLS "${TORCH_INSTALL_PREFIX}/lib/*.dll")
     add_custom_command(TARGET ACCDOA-libtorch POST_BUILD
         COMMAND ${CMAKE_COMMAND} -E copy_if_different
