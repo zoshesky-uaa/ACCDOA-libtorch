@@ -3,7 +3,7 @@
 #include <cmath>
 #include <algorithm>
 #include <vector>
-
+#include "ACCDOA-libtorch.h"
 // kfr
 #include <kfr/base.hpp>
 #include <kfr/dsp.hpp>
@@ -78,58 +78,58 @@ class FeatureExtractor {
 		static constexpr float pi = kfr::c_pi<float>;
 		static constexpr float pi2 = 2.0f * pi;
 		// KFR plan for real-valued DFT, initialized with the FFT size
-		kfr::dft_plan_real<float> plan = kfr::dft_plan_real<float>(fft_size);	
+		kfr::dft_plan_real<float> plan = kfr::dft_plan_real<float>(config.fft_size);	
 
 		// Temporary buffer for the DFT, size determined by the plan
 		kfr::univector<uint8_t> temp_buffer = kfr::univector<uint8_t>(plan.temp_size);
 
 		// Hann window for the FFT
-		kfr::univector<float> window = kfr::window_hann<float>(fft_size);
+		kfr::univector<float> window = kfr::window_hann<float>(config.fft_size);
 
 		// Mel filter bank for 64 Mel bands, initialized with the 16kHz sample rate
-		MelFilterBank mel = MelFilterBank(sample_rate, fft_size, num_mels);
+		MelFilterBank mel = MelFilterBank(config.sample_rate, config.fft_size, config.mel_bins);
 
 		// typedefs
 		using fftdata = kfr::univector<kfr::complex<float>>;
 		std::array<fftdata, 4> ch_freqs = {
-			fftdata(num_bins, 0.0f),
-			fftdata(num_bins, 0.0f),
-			fftdata(num_bins, 0.0f),
-			fftdata(num_bins, 0.0f)
+			fftdata(config.fft_bins, 0.0f),
+			fftdata(config.fft_bins, 0.0f),
+			fftdata(config.fft_bins, 0.0f),
+			fftdata(config.fft_bins, 0.0f)
 		};
-		fftdata w_freq = fftdata(num_bins, 0.0f);
-		fftdata x_freq = fftdata(num_bins, 0.0f);
-		fftdata y_freq = fftdata(num_bins, 0.0f);
+		fftdata w_freq = fftdata(config.fft_bins, 0.0f);
+		fftdata x_freq = fftdata(config.fft_bins, 0.0f);
+		fftdata y_freq = fftdata(config.fft_bins, 0.0f);
 		using buffer = kfr::univector<float>;
-		buffer planar_buffer = buffer(fft_size * channels, 0.0f);
+		buffer planar_buffer = buffer(config.fft_size * config.channels, 0.0f);
 
 		// Scratch space for intermediate calculations
-		kfr::univector<float> r_window = kfr::univector<float>(fft_size);
-		kfr::univector<float> mag_temp = kfr::univector<float>(num_bins);
-		kfr::univector<float> mel_temp = kfr::univector<float>(num_mels);
-		kfr::univector<kfr::complex<float>> conj_temp = kfr::univector<kfr::complex<float>>(num_bins);
+		kfr::univector<float> r_window = kfr::univector<float>(config.fft_size);
+		kfr::univector<float> mag_temp = kfr::univector<float>(config.fft_bins);
+		kfr::univector<float> mel_temp = kfr::univector<float>(config.mel_bins);
+		kfr::univector<kfr::complex<float>> conj_temp = kfr::univector<kfr::complex<float>>(config.fft_bins);
 
 		void log_mel_normalize(kfr::univector_ref<kfr::complex<float>> freqs, float*& mel_ptr) {
 			mag_temp = kfr::cabs(freqs);
-			for (size_t m = 0; m < num_mels; ++m) {
+			for (size_t m = 0; m < config.mel_bins; ++m) {
 				mel_temp[m] = kfr::dotproduct(mag_temp, mel.filters[m]);
 			}
-			kfr::univector_ref<float> mel_out(mel_ptr, num_mels);
+			kfr::univector_ref<float> mel_out(mel_ptr, config.mel_bins);
 			mel_out = kfr::log10(mel_temp + 1e-7f);
 
-			mel_ptr += num_mels;
+			mel_ptr += config.mel_bins;
 		};
 
 		void calc_iv(kfr::univector_ref<kfr::complex<float>> w,
 			kfr::univector_ref<kfr::complex<float>> conj_w,
 			kfr::univector_ref<kfr::complex<float>> directional,
 			float*& iv_ptr) {
-			kfr::univector_ref<float> iv_out(iv_ptr, num_bins);
+			kfr::univector_ref<float> iv_out(iv_ptr, config.fft_bins);
 
 			iv_out = kfr::real(conj_w * directional) /
 				(kfr::cabssqr(w) + 1e-7f);
 
-			iv_ptr += num_bins;
+			iv_ptr += config.fft_bins;
 		}
 
 		std::vector<float> extract(kfr::audio_data_interleaved audio) {
@@ -143,30 +143,30 @@ class FeatureExtractor {
 			planar_audio.for_channel([&](kfr::univector_ref<kfr::fbase> ch_data) {
 				// Shift the buffer to the left for the channel block
 				std::memmove(b_ptr,
-					b_ptr + hop_length,
-					hop_length * sizeof(float));
+					b_ptr + config.hop_length,
+					config.hop_length * sizeof(float));
 				// Create a reference to the current channel's buffer block
-				kfr::univector_ref<float> ch_buffer(b_ptr, fft_size);
+				kfr::univector_ref<float> ch_buffer(b_ptr, config.fft_size);
 				//Update from index hop_length to end of buffer (another hop_length frames) with new data
-				ch_buffer.slice(hop_length, hop_length) = ch_data;
+				ch_buffer.slice(config.hop_length, config.hop_length) = ch_data;
 				// Apply window function to the whole channel buffer and execute the FFT
 				r_window = ch_buffer * window;
 				plan.execute(ch_freqs[ch], r_window, temp_buffer);
-				b_ptr += fft_size; ch++;
+				b_ptr += config.fft_size; ch++;
 			});
 
 			// Compute the spatial features (W, x, y) from the channel FFTs
 			w_freq = ch_freqs[1] + ch_freqs[0] + ch_freqs[3] + ch_freqs[2]; // Omni
 			x_freq = (ch_freqs[1] + ch_freqs[0]) - (ch_freqs[3] + ch_freqs[2]); // Front-Back
 			y_freq = (ch_freqs[1] + ch_freqs[3]) - (ch_freqs[0] + ch_freqs[2]); // Left-Right
-			kfr::univector_ref<kfr::complex<float>> conj_w(conj_temp.data(), num_bins);
+			kfr::univector_ref<kfr::complex<float>> conj_w(conj_temp.data(), config.fft_bins);
 			conj_w = kfr::cconj(w_freq);
 
 			// Log-mel features (64) (W), with intensity vectors (x,y)
-			std::vector<float> features(num_mels + (2 * num_bins));
+			std::vector<float> features(config.mel_bins + (2 * config.fft_bins));
 			float* mel_ptr = features.data();
-			float* iv_x_ptr = features.data() + num_mels;
-			float* iv_y_ptr = features.data() + num_mels + num_bins;
+			float* iv_x_ptr = features.data() + config.mel_bins;
+			float* iv_y_ptr = features.data() + config.mel_bins + config.fft_bins;
 
 			// Calculate log-mel of W
 			log_mel_normalize(w_freq, mel_ptr);
@@ -180,19 +180,15 @@ class FeatureExtractor {
 		};
 
 	public:
-		// These get recasted as size_t by kfr
-		static constexpr size_t fft_size = 1024;
-		static constexpr size_t hop_length = 512;
-		static constexpr size_t num_bins = fft_size / 2 + 1;
-		static constexpr size_t channels = 4;
-		static constexpr size_t num_mels = 64;
-		static constexpr size_t sample_rate = 16000;
-		const float log_max_vol = std::log1p(static_cast<float>(fft_size) / 2.0f);
+		const float log_max_vol;
+		SystemConfig config;
+
+		FeatureExtractor(SystemConfig config) : config(config), log_max_vol(std::log1p(static_cast<float>(config.fft_size) / 2.0f)) {}
 
 		std::vector<float> feature_extract(AudioDevice& audioDevice) {
 			std::vector<float> buffer(static_cast<size_t>(audioDevice.framelimit * audioDevice.channels));
 			while (!audioDevice.read(buffer.data()));
-			kfr::audio_data_interleaved audio = kfr::audio_data_interleaved(buffer.data(), channels, hop_length);
+			kfr::audio_data_interleaved audio = kfr::audio_data_interleaved(buffer.data(), config.channels, config.hop_length);
 			std::vector<float> features = extract(audio);
 			return features;
 		};

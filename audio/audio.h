@@ -3,11 +3,12 @@
 #include <miniaudio.h>
 #include <stdlib.h>
 #include <stdio.h>
+#include "../ACCDOA-libtorch.h"
 
 
 enum class DeviceType {
 	Playback,
-	Recording
+	Capture
 };
 
 class AudioDevice {
@@ -51,13 +52,18 @@ class AudioDevice {
 			}
 		};
 	public:		
-		const ma_uint32 channels = 4;
-		const ma_format sample_format = ma_format_f32;
-		const ma_uint32 sample_rate = 16000;
+		static constexpr const ma_format sample_format = ma_format_f32;
+		ma_uint32 channels;
+		ma_uint32 sample_rate;
 		ma_device device;
 		int framelimit;
 
-		AudioDevice(DeviceType device_type, char* device_name, int tick_rate) {
+		AudioDevice(DeviceType device_type, char* device_name, SystemConfig config)
+			: channels(static_cast<ma_uint32>(config.channels)),
+			sample_rate(static_cast<ma_uint32>(config.sample_rate)), device{},
+			framelimit(static_cast<ma_uint32>(config.hop_length))
+		{
+
 			// Force WASAPI backend 
 			ma_backend backends[] = { ma_backend_wasapi };
 			ma_context_config contextConfig = ma_context_config_init();
@@ -80,15 +86,16 @@ class AudioDevice {
 			}
 
 			int device_count; ma_device_info* devices; ma_device_config deviceConfig;
+			
 			if (device_type == DeviceType::Playback) {
 				device_count = playbackDeviceCount;
 				devices = pPlaybackDevices;
-				ma_device_config deviceConfig = ma_device_config_init(ma_device_type_playback);
+				deviceConfig = ma_device_config_init(ma_device_type_playback);
 				deviceConfig.dataCallback = AudioDevice::playback_data_callback;
 			} else {
 				device_count = captureDeviceCount;
 				devices = pCaptureDevices;
-				ma_device_config deviceConfig = ma_device_config_init(ma_device_type_capture);
+				deviceConfig = ma_device_config_init(ma_device_type_capture);
 				deviceConfig.dataCallback = AudioDevice::capture_data_callback;
 			}
 
@@ -116,14 +123,13 @@ class AudioDevice {
 			deviceConfig.capture.format = sample_format;
 
 			// Tick_rate should be roughly SAMPLING_FREQUENCY/(FFT_SIZE/2) or 512 for 1024 point FFT
-			framelimit = sample_rate / tick_rate;
 			deviceConfig.periodSizeInFrames = framelimit;
 
 			// Configuration default, match your microphone settings to match else it will not work.
 			r = ma_pcm_rb_init(
 				sample_format,
 				channels,
-				(framelimit * 64),
+				(framelimit * 64), // Size of ring buffer, made it reasonably large
 				NULL,
 				NULL,
 				&ringBuffer
@@ -151,13 +157,16 @@ class AudioDevice {
 				ma_context_uninit(&context);
 				throw std::runtime_error("Failed to initialize device: " + std::to_string(r));
 			}
+		};
 
-			r = ma_device_start(&device);
+		bool start() {
+			ma_result r = ma_device_start(&device);
 			if (r != MA_SUCCESS) {
 				ma_device_uninit(&device);
 				ma_context_uninit(&context);
 				throw std::runtime_error("Failed to start device: " + std::to_string(r));
 			}
+			return true;
 		};
 
 		bool read(float* buffer) {
