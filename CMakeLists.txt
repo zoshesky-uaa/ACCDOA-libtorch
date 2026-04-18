@@ -26,8 +26,8 @@ FetchContent_MakeAvailable(xtl xsimd xtensor)
 
 # z5 dependencies
 FetchContent_Declare(nlohmann_json GIT_REPOSITORY https://github.com/nlohmann/json.git GIT_TAG master OVERRIDE_FIND_PACKAGE)
-FetchContent_Declare(ZLIB GIT_REPOSITORY https://github.com/madler/zlib.git GIT_TAG master OVERRIDE_FIND_PACKAGE)
-FetchContent_MakeAvailable(nlohmann_json ZLIB)
+FetchContent_Declare(zlib GIT_REPOSITORY https://github.com/madler/zlib.git GIT_TAG master OVERRIDE_FIND_PACKAGE)
+FetchContent_MakeAvailable(nlohmann_json zlib)
 
 # kfr
 FetchContent_Declare(kfr GIT_REPOSITORY https://github.com/kfrlib/kfr.git GIT_TAG main)
@@ -43,9 +43,7 @@ FetchContent_Declare(z5 GIT_REPOSITORY https://github.com/constantinpape/z5 GIT_
 FetchContent_MakeAvailable(z5)
 
 add_executable(ACCDOA-libtorch 
-    ACCDOA-libtorch.cpp 
-    ACCDOA-libtorch.h
-)
+    ACCDOA-libtorch.cpp)
 
 set_target_properties(ACCDOA-libtorch PROPERTIES
     CXX_STANDARD 20
@@ -55,11 +53,20 @@ set_target_properties(ACCDOA-libtorch PROPERTIES
 set_property(TARGET ACCDOA-libtorch PROPERTY COMPILE_FLAGS "${TORCH_CXX_FLAGS}")
 
 target_link_libraries(ACCDOA-libtorch PRIVATE 
-    kfr
-    miniaudio
-    z5
+    xtl
+    xsimd
     xtensor
+    nlohmann_json
+    zlib
+    kfr
+    miniaudio  
+    z5
     ${TORCH_LIBRARIES}
+)
+
+target_include_directories(ACCDOA-libtorch PRIVATE
+    ${zlib_SOURCE_DIR}
+    ${zlib_BINARY_DIR}   
 )
 
 if (MSVC)

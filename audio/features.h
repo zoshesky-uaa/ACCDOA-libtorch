@@ -1,9 +1,9 @@
 #pragma once
-#include "audio/audio.h"
 #include <cmath>
 #include <algorithm>
 #include <vector>
-#include "ACCDOA-libtorch.h"
+#include "audio.h"
+#include "../ACCDOA-libtorch.h"
 // kfr
 #include <kfr/base.hpp>
 #include <kfr/dsp.hpp>
@@ -163,7 +163,7 @@ class FeatureExtractor {
 			conj_w = kfr::cconj(w_freq);
 
 			// Log-mel features (64) (W), with intensity vectors (x,y)
-			std::vector<float> features(config.mel_bins + (2 * config.fft_bins));
+			
 			float* mel_ptr = features.data();
 			float* iv_x_ptr = features.data() + config.mel_bins;
 			float* iv_y_ptr = features.data() + config.mel_bins + config.fft_bins;
@@ -181,15 +181,19 @@ class FeatureExtractor {
 
 	public:
 		const float log_max_vol;
-		SystemConfig config;
+		const SystemConfig& config;
+		std::vector<float>& features;
 
-		FeatureExtractor(SystemConfig config) : config(config), log_max_vol(std::log1p(static_cast<float>(config.fft_size) / 2.0f)) {}
+		FeatureExtractor(const SystemConfig& config, std::vector<float>& features) 
+			: config(config), 
+			log_max_vol(std::log1p(static_cast<float>(config.fft_size) / 2.0f)),
+			features(features) {}
 
-		std::vector<float> feature_extract(AudioDevice& audioDevice) {
+		bool feature_extract(AudioDevice& audioDevice) {
 			std::vector<float> buffer(static_cast<size_t>(audioDevice.framelimit * audioDevice.channels));
 			while (!audioDevice.read(buffer.data()));
 			kfr::audio_data_interleaved audio = kfr::audio_data_interleaved(buffer.data(), config.channels, config.hop_length);
 			std::vector<float> features = extract(audio);
-			return features;
+			return true;
 		};
 };

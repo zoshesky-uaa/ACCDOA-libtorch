@@ -5,20 +5,10 @@
 #include <stdio.h>
 #include "../ACCDOA-libtorch.h"
 
-
-enum class DeviceType {
-	Playback,
-	Capture
-};
-
 class AudioDevice {
 	private:
 		ma_pcm_rb ringBuffer;
 		ma_context context;
-		
-		static void playback_data_callback(ma_device* pDevice, void* pOutput, const void* pInput, ma_uint32 frameCount) {
-
-		};
 
 		static void capture_data_callback(ma_device* pDevice, void* pOutput, const void* pInput, ma_uint32 frameCount) {
 			// Retrieve the class ring buffer from pUserData
@@ -51,19 +41,21 @@ class AudioDevice {
 				pRunningInput += (framesToAcquire * pDevice->capture.channels);
 			}
 		};
+
 	public:		
 		static constexpr const ma_format sample_format = ma_format_f32;
 		ma_uint32 channels;
 		ma_uint32 sample_rate;
+		ma_uint32 framelimit;
 		ma_device device;
-		int framelimit;
+		
 
-		AudioDevice(DeviceType device_type, char* device_name, SystemConfig config)
+		AudioDevice(const std::string& device_name, const SystemConfig& config)
 			: channels(static_cast<ma_uint32>(config.channels)),
-			sample_rate(static_cast<ma_uint32>(config.sample_rate)), device{},
-			framelimit(static_cast<ma_uint32>(config.hop_length))
+			sample_rate(static_cast<ma_uint32>(config.sample_rate)), 
+			framelimit(static_cast<ma_uint32>(config.hop_length)),
+			device{}
 		{
-
 			// Force WASAPI backend 
 			ma_backend backends[] = { ma_backend_wasapi };
 			ma_context_config contextConfig = ma_context_config_init();
@@ -87,21 +79,14 @@ class AudioDevice {
 
 			int device_count; ma_device_info* devices; ma_device_config deviceConfig;
 			
-			if (device_type == DeviceType::Playback) {
-				device_count = playbackDeviceCount;
-				devices = pPlaybackDevices;
-				deviceConfig = ma_device_config_init(ma_device_type_playback);
-				deviceConfig.dataCallback = AudioDevice::playback_data_callback;
-			} else {
-				device_count = captureDeviceCount;
-				devices = pCaptureDevices;
-				deviceConfig = ma_device_config_init(ma_device_type_capture);
-				deviceConfig.dataCallback = AudioDevice::capture_data_callback;
-			}
+			device_count = captureDeviceCount;
+			devices = pCaptureDevices;
+			deviceConfig = ma_device_config_init(ma_device_type_capture);
+			deviceConfig.dataCallback = AudioDevice::capture_data_callback;
 
 			ma_device_info* selected_device = NULL;
 			for (ma_uint32 i = 0; i < device_count; i++) {
-				if (strstr(devices[i].name, device_name) != NULL) {
+				if (std::strstr(devices[i].name, device_name.c_str()) != NULL) {
 					selected_device = &devices[i];
 					break;
 				}
@@ -109,7 +94,7 @@ class AudioDevice {
 
 			if (selected_device == NULL) {
 				ma_context_uninit(&context);
-				throw std::runtime_error("Failed to find device with name: " + std::string(device_name));
+				throw std::runtime_error("Failed to find device with name: " + device_name);
 			}
 
 			if (r != MA_SUCCESS) {
