@@ -3,7 +3,7 @@
 #include <miniaudio.h>
 #include <stdlib.h>
 #include <stdio.h>
-#include "../ACCDOA-libtorch.h"
+#include "../config.h"
 
 class AudioDevice {
 	private:
@@ -181,6 +181,7 @@ class AudioDevice {
 			}
 
 			if (framesReadTotal == framelimit) return true;
+			return false;
 		};
 
 		~AudioDevice() {

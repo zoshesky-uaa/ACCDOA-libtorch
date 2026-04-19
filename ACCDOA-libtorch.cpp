@@ -1,46 +1,74 @@
 ﻿// ACCDOA-libtorch.cpp : Defines the entry point for the application.
-
 #include <torch/torch.h>
-#include "audio/audio.h"	
-#include "ACCDOA-libtorch.h"
 #include <atomic>
+#include "ACCDOA-libtorch.h"
 
 using namespace std;
 struct InputCommand {	
-	string device_name;
-	string zarr_path;
-	bool training_mode;
+	string device_name = "";
+	string zarr_path = "";
+	bool training_mode = false;
 	NLOHMANN_DEFINE_TYPE_INTRUSIVE(InputCommand, device_name, zarr_path, training_mode)
 };
 
+static constexpr int DEBUG_LIMIT = 26;
+std::optional<InputCommand> read_input(SystemConfig& config, bool JSON) {
+	std::string raw_input;
+	int i = 1;
+	cout << "Provide JSON signature:" << endl;
+	while (i < DEBUG_LIMIT) {
+		if (!std::getline(std::cin, raw_input) || raw_input.empty()) continue;
+		if (raw_input == "exit") {
+			break;
+		}
+		if (nlohmann::json::accept(raw_input) && JSON) {
+			try {
+				auto j = nlohmann::json::parse(raw_input);
+				return j.get<InputCommand>();
+			}
+			catch (const std::exception& e) {
+				std::cerr << "Schema Error: " << e.what() << std::endl;
+			}
+		}
+		else {
+			std::cerr << "Invalid JSON or command, try again." << std::endl;
+		}
+		std::cout << "Provide JSON signature (Attempt " << ++i << "):" << std::endl;
+	}
+	config.on.store(false);
+	std::cout << "Stopping application." << std::endl;
+	return nullopt;
+}
 
-static constexpr SystemConfig config{
-	.sample_rate = 16000,
-	.channels = 4, // Not designed to be changed, harcoded for now. .
-	.fft_size = 1024,
-	.hop_length = 1024/2,
-	.fft_bins = (1024/2) + 1,
-	.mel_bins = 64,
-	.feature_dim = 64 + (2 * ((1024 / 2) + 1)),
-	.frame_max = 20000, // 650 seconds at 32.5 millseconds per tick (sample rate / (hop_length = framelimit))
-	.on = true
-};
+std::thread processor_thread(const InputCommand& cmd, SystemConfig& config) {
+	return std::thread([cmd, &config]() {
+		try {
+			ACCDOA accdoa(cmd.training_mode, cmd.device_name, cmd.zarr_path, config);
+		}
+		catch (const std::exception& e) {
+			std::cerr << "Error during processing: " << e.what() << std::endl;
+			config.on.store(false);
+		}
+	});
+}
+
+std::thread read_input_thread(SystemConfig& config) {
+	return std::thread([&config]() {
+		read_input(config, false);
+	});
+}
 
 int main() {
-	// Setup stdin to read commands (i.e. device name, start)
-	// Setup another thread for stdout to print ticks
-	cout << "Provide JSON signature:" << endl;
-	try {
-		nlohmann::json incoming_json;
-		cin >> incoming_json;
-		InputCommand input_command = incoming_json.get<InputCommand>();
-		ACCDOA accdoa(ref(input_command.training_mode), ref(input_command.device_name), ref(input_command.zarr_path), ref(config));
+	SystemConfig config = SystemConfig();
+	auto input_command = read_input(config, true);
+	if (input_command.has_value()) {
+		std::thread thread_1 = processor_thread(input_command.value(), config);
+		std::thread thread_2 = read_input_thread(config);
 		while (config.on) {
-
+			std::this_thread::sleep_for(std::chrono::milliseconds(100));
 		}
-	} catch (const nlohmann::json::exception& e) {
-		cerr << "JSON Parsing Error: " << e.what() << std::endl;
-		return 1;
+		if (thread_1.joinable()) thread_1.join();
+		if (thread_2.joinable()) thread_2.join();
 	}
 	return 0;
 }

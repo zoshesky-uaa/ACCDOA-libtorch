@@ -3,7 +3,7 @@
 #include <algorithm>
 #include <vector>
 #include "audio.h"
-#include "../ACCDOA-libtorch.h"
+#include "../config.h"
 // kfr
 #include <kfr/base.hpp>
 #include <kfr/dsp.hpp>
@@ -74,6 +74,10 @@ class MelFilterBank {
 
 class FeatureExtractor {
 	private:
+		const SystemConfig& config;
+		std::vector<float>& features;
+		const float log_max_vol;
+
 		// constants
 		static constexpr float pi = kfr::c_pi<float>;
 		static constexpr float pi2 = 2.0f * pi;
@@ -180,10 +184,6 @@ class FeatureExtractor {
 		};
 
 	public:
-		const float log_max_vol;
-		const SystemConfig& config;
-		std::vector<float>& features;
-
 		FeatureExtractor(const SystemConfig& config, std::vector<float>& features) 
 			: config(config), 
 			log_max_vol(std::log1p(static_cast<float>(config.fft_size) / 2.0f)),
