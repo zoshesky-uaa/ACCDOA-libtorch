@@ -3,6 +3,9 @@
 #include <miniaudio.h>
 #include <stdlib.h>
 #include <stdio.h>
+#include <string>
+#include <stdexcept>
+#include <cstring>
 #include "../config.h"
 
 class AudioDevice {
@@ -119,6 +122,11 @@ class AudioDevice {
 				NULL,
 				&ringBuffer
 			);
+
+			if (r != MA_SUCCESS) {
+				ma_context_uninit(&context);
+				throw std::runtime_error("Failed to initialize ring buffer: " + std::to_string(r));
+			}
 
 			deviceConfig.capture.channels = channels;
 			deviceConfig.sampleRate = sample_rate;

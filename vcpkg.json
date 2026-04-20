@@ -1,0 +1,19 @@
+{
+  "name": "accdoa-libtorch",
+  "version": "1.0.1",
+  "dependencies": [
+    "blosc",
+    "nlohmann-json",
+    "zlib",
+    "zstd",
+    "miniaudio",
+    {
+      "name": "xtensor",
+      "features": [
+        "xsimd"
+      ]
+    },
+    "xtl"
+  ],
+  "builtin-baseline": "256acc64012b23a13041d8705805e1f23b43a024"
+}

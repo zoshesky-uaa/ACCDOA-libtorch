@@ -15,9 +15,14 @@ static constexpr int DEBUG_LIMIT = 26;
 std::optional<InputCommand> read_input(SystemConfig& config, bool JSON) {
 	std::string raw_input;
 	int i = 1;
-	cout << "Provide JSON signature:" << endl;
+	if (JSON) {
+		cout << "Provide JSON signature:" << endl;
+	} else {
+		cout << "Application can be ended by typing 'exit', currently processing." << endl;
+	}
 	while (i < DEBUG_LIMIT) {
-		if (!std::getline(std::cin, raw_input) || raw_input.empty()) continue;
+		if (!std::getline(std::cin, raw_input)) break; // EOF -> stop
+		if (raw_input.empty()) continue;
 		if (raw_input == "exit") {
 			break;
 		}

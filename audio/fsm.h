@@ -74,11 +74,10 @@ class Writer {
         Writer(const std::string& path, const SystemConfig& config)
             : config(config) {
 
-            // Create the file in given path
+            // We assume the directory to be a zarr provided without the feature subgroup and datasets.
             z5::filesystem::handle::File f(path);
-            z5::createFile(f, /*isZarr=*/true);
 
-            // Create the root group and features sub-group
+            // Features sub-group
             z5::createGroup(f, "features");
             z5::filesystem::handle::Group features_group(f, "features");
 
