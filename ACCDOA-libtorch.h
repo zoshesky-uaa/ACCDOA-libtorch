@@ -29,6 +29,7 @@ class ACCDOA {
 			writer(zarr_path, config),
 			config(config)
 			{
+			std::cout << "Initialized ACCDOA with device: " << device_name << " and zarr path: " << zarr_path << std::endl;
 			if (training) {
 				audio_device.start();
 				std::cout << "START" << std::endl;

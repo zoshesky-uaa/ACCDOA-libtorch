@@ -29,7 +29,6 @@ class Writer {
         // z5 uses xtensor-like views to handle multi-dimensional data
         std::shared_ptr<z5::Dataset> mel_ds, iv_x_ds, iv_y_ds;
 
-
         const SystemConfig& config;
         int chunk_size = 500;
 		int current_local_idx = 0;
@@ -40,18 +39,28 @@ class Writer {
 		ma_rb task_queue;
         ma_rb free_pool;
         std::thread worker;
-        size_t sz = sizeof(Task*);
+
+		// Helper functions to acquire task pointers from the ring buffers
+        static bool rb_acquire_read_task_ptr(ma_rb& rb, void*& ptr) {
+            size_t bytes = sizeof(Task*);
+            return ma_rb_acquire_read(&rb, &bytes, &ptr) == MA_SUCCESS && bytes == sizeof(Task*);
+        }
+
+        static bool rb_acquire_write_task_ptr(ma_rb& rb, void*& ptr) {
+            size_t bytes = sizeof(Task*);
+            return ma_rb_acquire_write(&rb, &bytes, &ptr) == MA_SUCCESS && bytes == sizeof(Task*);
+        }
 
         void thread_loop() {
             while (config.on) {
                 void* readPtr;
                 Task* full_task = nullptr;
-               
-                if (ma_rb_acquire_read(&task_queue, &sz, &readPtr) == MA_SUCCESS && sz == sizeof(Task*)) {
-                    Task* full_task;
+                if (rb_acquire_read_task_ptr(task_queue, readPtr)) {
+					Task* full_task = nullptr;
                     std::memcpy(&full_task, readPtr, sizeof(Task*));
                     ma_rb_commit_read(&task_queue, sizeof(Task*));
 
+					std::cout << "Writing chunk at offset: " << full_task->offset_coord[0] << std::endl;
                     // Write the chunks to the respective datasets at the correct offset
                     z5::multiarray::writeSubarray<float>(*mel_ds, full_task->mel, full_task->offset_coord.begin());
                     z5::multiarray::writeSubarray<float>(*iv_x_ds, full_task->iv_x, full_task->offset_coord.begin());
@@ -59,7 +68,7 @@ class Writer {
                     
                     // Write an empty task pointer back to the free pool for reuse.
                     void* writePtr;
-                    if (ma_rb_acquire_write(&free_pool, &sz, &writePtr) == MA_SUCCESS && sz == sizeof(Task*)) {
+                    if (rb_acquire_write_task_ptr(free_pool, writePtr)) {
                         std::memcpy(writePtr, &full_task, sizeof(Task*));
                         ma_rb_commit_write(&free_pool, sizeof(Task*));
                     }
@@ -73,7 +82,6 @@ class Writer {
         int count = 0;
         Writer(const std::string& path, const SystemConfig& config)
             : config(config) {
-
             // We assume the directory to be a zarr provided without the feature subgroup and datasets.
             z5::filesystem::handle::File f(path);
 
@@ -118,7 +126,7 @@ class Writer {
             for (int i = 0; i < task_limit; ++i) {
                 Task* t = new Task(chunk_size, config.mel_bins, config.fft_bins);
                 
-                void* writePtr;
+                void* writePtr; size_t sz = sizeof(Task*);
                 if (ma_rb_acquire_write(&free_pool, &sz, &writePtr) == MA_SUCCESS && sz == sizeof(Task*)) {
                     std::memcpy(writePtr, &t, sizeof(Task*));
                     ma_rb_commit_write(&free_pool, sizeof(Task*));
@@ -132,7 +140,7 @@ class Writer {
             if (active_task == nullptr) {
                 // Acquire a new task pointer from the free pool
                 void* readPtr;
-                if (ma_rb_acquire_read(&free_pool, &sz, &readPtr) == MA_SUCCESS && sz == sizeof(Task*)) {
+                if (rb_acquire_read_task_ptr(free_pool, readPtr)) {
                     std::memcpy(&active_task, readPtr, sizeof(Task*));
                     ma_rb_commit_read(&free_pool, sizeof(Task*));
                     // Set the offset for this task based on the global count of frames processed so far
@@ -161,7 +169,7 @@ class Writer {
 
             if (current_local_idx >= chunk_size) {
                 void* writePtr;
-                if (ma_rb_acquire_write(&task_queue, &sz, &writePtr) == MA_SUCCESS && sz == sizeof(Task*)) {
+                if (rb_acquire_write_task_ptr(task_queue, writePtr)) {
                     std::memcpy(writePtr, &active_task, sizeof(Task*));
                     ma_rb_commit_write(&task_queue, sizeof(Task*));
                 }
@@ -179,21 +187,22 @@ class Writer {
 
 			// Clean up the active task if it exists
             if (active_task != nullptr) delete active_task;
-            void* readPtr;
-            Task* task_to_delete = nullptr;
 
-			// Clean up any remaining tasks in the free pool and task queue
-            while (ma_rb_acquire_read(&free_pool, &sz, &readPtr) == MA_SUCCESS && sz == sizeof(Task*)) {
+            // Clean up any remaining tasks in the free pool and task queue
+            void* readPtr; Task* task_to_delete = nullptr;
+            while (rb_acquire_read_task_ptr(free_pool, readPtr)) {
                 std::memcpy(&task_to_delete, readPtr, sizeof(Task*));
                 ma_rb_commit_read(&free_pool, sizeof(Task*));
                 delete task_to_delete;
+                task_to_delete = nullptr;
             }
-            
-            while (ma_rb_acquire_read(&task_queue, &sz, &readPtr) == MA_SUCCESS && sz == sizeof(Task*)) {
+
+            while (rb_acquire_read_task_ptr(task_queue, readPtr)) {
                 std::memcpy(&task_to_delete, readPtr, sizeof(Task*));
                 ma_rb_commit_read(&task_queue, sizeof(Task*));
                 delete task_to_delete;
-			}
+                task_to_delete = nullptr;
+            }
 
             ma_rb_uninit(&task_queue);
             ma_rb_uninit(&free_pool);

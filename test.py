@@ -4,6 +4,17 @@ import json
 from pathlib import Path
 import atexit
 
+# Install zarr to make .zgroup marker file before being sent to the subprocess, use conda
+try:
+    import z5py
+except ModuleNotFoundError:
+    import sys, subprocess, importlib, shutil
+    conda = shutil.which("conda")
+    if not conda:
+        raise SystemExit("conda not found on PATH, add package manually via \n conda install conda-forge::z5py")
+    subprocess.check_call([conda, "install", "-y", "-c", "conda-forge", "z5py"])
+    z5py = importlib.import_module("z5py")
+
 # Call path for application
 repo_root = Path(__file__).resolve().parent
 application_path = (repo_root / "out/build/x64-debug/ACCDOA-libtorch.exe").resolve()
@@ -14,21 +25,18 @@ if not application_path.exists():
 # Iterative zarr path creation, keep ahold of path for zarr label operations
 base_path = Path('trials').resolve()
 base_path.mkdir(parents=True, exist_ok=True)
-highest_num = 0
-for child in base_path.iterdir():
-    if child.is_dir() and child.name.startswith("trial_"):
-        try:
-            num = int(child.name.split("_")[1])
-            highest_num = max(highest_num, num)
-        except ValueError:
-            pass
-path = base_path / f"zarr_{highest_num + 1}"
-path.mkdir(parents=True, exist_ok=True)
+
+i = 1
+while (base_path / f"trial_{i}.zarr").exists():
+    i += 1
+
+root_group = z5py.File(base_path / f"trial_{i}.zarr", mode='w')
+
 
 # Intiation configuration sent to application
 config_data = {
     "device_name": "Voicemeeter Out B1 (VB-Audio Voicemeeter VAIO)",
-    "zarr_path": str(path.as_posix()),
+    "zarr_path": str((base_path / f"trial_{i}.zarr").as_posix()),
     "training_mode": True
 }
 
