@@ -26,7 +26,7 @@ class ACCDOA {
 			features(config.feature_dim, 0.0f),
 			audio_device(device_name, config),
 			feature_extractor(config, features),
-			writer(zarr_path, config),
+			writer(zarr_path, config, training_mode),
 			config(config)
 			{
 			std::cout << "Initialized ACCDOA with device: " << device_name << " and zarr path: " << zarr_path << std::endl;

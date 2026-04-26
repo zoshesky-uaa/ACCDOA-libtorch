@@ -55,7 +55,7 @@ set(WITH_ZSTD ON CACHE BOOL "" FORCE)
 FetchContent_Declare(z5 GIT_REPOSITORY https://github.com/constantinpape/z5 GIT_TAG master)
 FetchContent_MakeAvailable(z5)
 
-add_executable(ACCDOA-libtorch ACCDOA-libtorch.cpp)
+add_executable(ACCDOA-libtorch ACCDOA-libtorch.cpp "model/model.h")
 
 set_property(TARGET ACCDOA-libtorch PROPERTY COMPILE_FLAGS "${TORCH_CXX_FLAGS}")
 

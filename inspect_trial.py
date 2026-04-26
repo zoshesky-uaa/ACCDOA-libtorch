@@ -32,9 +32,9 @@ plt = _ensure_module("matplotlib.pyplot", "matplotlib", "matplotlib")
 
 def plot_frames(trial_path: Path, frame_count = 500) -> None:
     f = z5py.File(str(trial_path), mode="r")
-    mel = f["features/mel_amp"]
-    iv_x = f["features/mel_iv_x"]
-    iv_y = f["features/mel_iv_y"]
+    mel = f["features/mel"]
+    iv_x = f["features/iv_x"]
+    iv_y = f["features/iv_y"]
 
     n = min(frame_count, int(mel.shape[0]))
     if n == 0:

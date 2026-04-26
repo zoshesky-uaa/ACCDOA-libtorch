@@ -81,6 +81,7 @@ class FeatureExtractor {
 		// constants
 		static constexpr float pi = kfr::c_pi<float>;
 		static constexpr float pi2 = 2.0f * pi;
+
 		// KFR plan for real-valued DFT, initialized with the FFT size
 		kfr::dft_plan_real<float> plan = kfr::dft_plan_real<float>(config.fft_size);	
 
@@ -152,14 +153,12 @@ class FeatureExtractor {
 			float* b_ptr = planar_buffer.data();
 			int ch = 0;
 			planar_audio.for_channel([&](kfr::univector_ref<kfr::fbase> ch_data) {
-				// Shift the buffer to the left for the channel block
-				std::memmove(b_ptr,
-					b_ptr + config.hop_length,
-					config.hop_length * sizeof(float));
 				// Create a reference to the current channel's buffer block
 				kfr::univector_ref<float> ch_buffer(b_ptr, config.fft_size);
-				//Update from index hop_length to end of buffer (another hop_length frames) with new data
-				ch_buffer.slice(config.hop_length, config.hop_length) = ch_data;
+				// Shift the buffer to the left for the channel block
+				ch_buffer.slice(0, config.history_size) = ch_buffer.slice(config.hop_length, config.history_size);
+				// 2. Insert New Data: Place the 160 new samples at the end (indices 352-511)
+				ch_buffer.slice(config.history_size, config.hop_length) = ch_data;
 				// Apply window function to the whole channel buffer and execute the FFT
 				r_window = ch_buffer * window;
 				plan.execute(ch_freqs[ch], r_window, temp_buffer);
@@ -198,7 +197,9 @@ class FeatureExtractor {
 
 		bool feature_extract(AudioDevice& audioDevice) {
 			std::vector<float> buffer(static_cast<size_t>(audioDevice.framelimit * audioDevice.channels));
-			while (!audioDevice.read(buffer.data()));
+			while (!audioDevice.read(buffer.data())) {
+				std::this_thread::sleep_for(std::chrono::milliseconds(1));
+			}
 			kfr::audio_data_interleaved audio = kfr::audio_data_interleaved(buffer.data(), config.channels, config.hop_length);
 			std::vector<float> features = extract(audio);
 			return true;
