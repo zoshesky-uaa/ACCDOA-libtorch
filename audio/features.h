@@ -111,6 +111,7 @@ class FeatureExtractor {
 		kfr::univector<float> r_window = kfr::univector<float>(config.fft_size);
 		kfr::univector<float> mag_temp = kfr::univector<float>(config.fft_bins);
 		kfr::univector<float> mel_temp = kfr::univector<float>(config.mel_bins);
+		kfr::univector<float> linear_temp = kfr::univector<float>(config.fft_bins);
 		kfr::univector<kfr::complex<float>> conj_temp = kfr::univector<kfr::complex<float>>(config.fft_bins);
 
 		void log_mel_normalize(kfr::univector_ref<kfr::complex<float>> freqs, float*& mel_ptr) {
@@ -124,16 +125,22 @@ class FeatureExtractor {
 			mel_ptr += config.mel_bins;
 		};
 
-		void calc_iv(kfr::univector_ref<kfr::complex<float>> w,
+		void calc_mel_iv(kfr::univector_ref<kfr::complex<float>> w,
 			kfr::univector_ref<kfr::complex<float>> conj_w,
 			kfr::univector_ref<kfr::complex<float>> directional,
 			float*& iv_ptr) {
-			kfr::univector_ref<float> iv_out(iv_ptr, config.fft_bins);
+			kfr::univector_ref<float> iv_out(iv_ptr, config.mel_bins);
+			linear_temp = kfr::real(conj_w * directional) / (kfr::cabssqr(w) + 1e-7f);
+			// Compress the linear intensity vector into Mel bands for consistency
+			for (size_t m = 0; m < config.mel_bins; ++m) {
+				// Sum of the current triangular filter weights
+				float filter_sum = kfr::sum(mel.filters[m]);
 
-			iv_out = kfr::real(conj_w * directional) /
-				(kfr::cabssqr(w) + 1e-7f);
+				// Dot product the linear IV with the filter, then normalize by the filter sum
+				iv_out[m] = kfr::dotproduct(linear_temp, mel.filters[m]) / (filter_sum + 1e-7f);
+			}
 
-			iv_ptr += config.fft_bins;
+			iv_ptr += config.mel_bins;
 		}
 
 		std::vector<float> extract(kfr::audio_data_interleaved audio) {
@@ -170,16 +177,16 @@ class FeatureExtractor {
 			
 			float* mel_ptr = features.data();
 			float* iv_x_ptr = features.data() + config.mel_bins;
-			float* iv_y_ptr = features.data() + config.mel_bins + config.fft_bins;
+			float* iv_y_ptr = features.data() + 2 * config.mel_bins;
 
 			// Calculate log-mel of W
 			log_mel_normalize(w_freq, mel_ptr);
 
-			// Calculate intensity vectors for x and y
-			calc_iv(w_freq, conj_w, x_freq, iv_x_ptr);
-			calc_iv(w_freq, conj_w, y_freq, iv_y_ptr);
+			// Calculate mel-intensity vectors for x and y
+			calc_mel_iv(w_freq, conj_w, x_freq, iv_x_ptr);
+			calc_mel_iv(w_freq, conj_w, y_freq, iv_y_ptr);
 
-			// Final return should be {log-mel W (64), IV x (512), IV y (512)} = 1088 features total
+			// Final return should be {log-mel W (128), mel-IV_X (128), mel-IV_Y (128)} = 384 features total
 			return features;
 		};
 

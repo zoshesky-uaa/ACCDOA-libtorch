@@ -32,17 +32,17 @@ plt = _ensure_module("matplotlib.pyplot", "matplotlib", "matplotlib")
 
 def plot_frames(trial_path: Path, frame_count = 500) -> None:
     f = z5py.File(str(trial_path), mode="r")
-    mel = f["features/mel"]
-    iv_x = f["features/iv_x"]
-    iv_y = f["features/iv_y"]
+    mel = f["features/mel_amp"]
+    iv_x = f["features/mel_iv_x"]
+    iv_y = f["features/mel_iv_y"]
 
     n = min(frame_count, int(mel.shape[0]))
     if n == 0:
         raise RuntimeError("No frames found to plot.")
 
-    mel_100 = np.asarray(mel[:n, :], dtype=np.float32)   # [n,64]
-    ivx_100 = np.asarray(iv_x[:n, :], dtype=np.float32)  # [n,513]
-    ivy_100 = np.asarray(iv_y[:n, :], dtype=np.float32)  # [n,513]
+    mel_100 = np.asarray(mel[:n, :], dtype=np.float32)   
+    ivx_100 = np.asarray(iv_x[:n, :], dtype=np.float32)  
+    ivy_100 = np.asarray(iv_y[:n, :], dtype=np.float32) 
 
     fig, ax = plt.subplots(2, 2, figsize=(14, 8))
 

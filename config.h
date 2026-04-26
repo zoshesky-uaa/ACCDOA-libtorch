@@ -24,8 +24,8 @@ struct SystemConfig {
 		fft_size(1024),
 		hop_length(512),
 		fft_bins(1024 / 2 + 1), 
-		mel_bins(64),
-		feature_dim(64 + 2 * (1024 / 2 + 1)),
+		mel_bins(128),
+		feature_dim(3 * 128),
 		frame_max(20000),
 		on(true) {
 	}

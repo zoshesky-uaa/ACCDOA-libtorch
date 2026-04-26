@@ -17,10 +17,10 @@ struct Task {
     xt::xtensor<float, 2> iv_y;
     z5::types::ShapeType offset_coord;
 
-    Task(int chunk_sz, int mel_bins, int fft_bins)
+    Task(int chunk_sz, int mel_bins)
         : mel({ (size_t)chunk_sz, (size_t)mel_bins }),
-        iv_x({ (size_t)chunk_sz, (size_t)fft_bins }),
-        iv_y({ (size_t)chunk_sz, (size_t)fft_bins }),
+        iv_x({ (size_t)chunk_sz, (size_t)mel_bins }),
+        iv_y({ (size_t)chunk_sz, (size_t)mel_bins }),
         offset_coord({ 0, 0 }) {}
 };
 
@@ -92,8 +92,6 @@ class Writer {
 			// Define the shape and chunk size for the features dataset
             std::vector<size_t> mel_shape = { config.frame_max, (size_t)config.mel_bins };
             std::vector<size_t> mel_chunks = { (size_t)chunk_size, (size_t)config.mel_bins };
-            std::vector<size_t> fft_shape = { config.frame_max, (size_t)config.fft_bins };
-            std::vector<size_t> fft_chunks = { (size_t)chunk_size, (size_t)config.fft_bins };
 
 			// Define compression options for the datasets
             z5::types::CompressionOptions cOpts;
@@ -104,18 +102,18 @@ class Writer {
 
             // Create datasets for log-mel and intensity vectors
             mel_ds = z5::createDataset(
-                features_group, "mel", "float32",
+                features_group, "mel_amp", "float32",
                 mel_shape, mel_chunks,
                 "blosc", cOpts
             );
 			iv_x_ds = z5::createDataset(
-                features_group, "iv_x", "float32",
-                fft_shape, fft_chunks,
+                features_group, "mel_iv_x", "float32",
+                mel_shape, mel_chunks,
                 "blosc", cOpts
 			);
             iv_y_ds = z5::createDataset(
-                features_group, "iv_y", "float32",
-                fft_shape, fft_chunks,
+                features_group, "mel_iv_y", "float32",
+                mel_shape, mel_chunks,
                 "blosc", cOpts
             );
 
@@ -124,7 +122,7 @@ class Writer {
             ma_rb_init_ex(sizeof(Task*), task_limit, 0, nullptr, nullptr, &free_pool);
 
             for (int i = 0; i < task_limit; ++i) {
-                Task* t = new Task(chunk_size, config.mel_bins, config.fft_bins);
+                Task* t = new Task(chunk_size, config.mel_bins);
                 
                 void* writePtr; size_t sz = sizeof(Task*);
                 if (ma_rb_acquire_write(&free_pool, &sz, &writePtr) == MA_SUCCESS && sz == sizeof(Task*)) {
@@ -158,10 +156,10 @@ class Writer {
                 &active_task->mel(current_local_idx, 0));
 
             std::copy(features.begin() + config.mel_bins,
-                features.begin() + config.mel_bins + config.fft_bins,
+                features.begin() + 2 * config.mel_bins,
                 &active_task->iv_x(current_local_idx, 0));
 
-            std::copy(features.begin() + config.mel_bins + config.fft_bins,
+            std::copy(features.begin() + 2 * config.mel_bins,
                 features.end(),
                 &active_task->iv_y(current_local_idx, 0));
 
