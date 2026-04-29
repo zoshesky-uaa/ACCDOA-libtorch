@@ -23,7 +23,13 @@ class ACCDOA {
 		FeatureExtractor feature_extractor;
 		Writer writer;
 		SystemConfig& config;
-		M2M_AST model;
+
+		// Model and optimizer
+		M2M_AST sed_model;
+		M2M_AST doa_model;
+		std::unique_ptr<torch::optim::AdamW> sed_optimizer;
+		std::unique_ptr<torch::optim::AdamW> doa_optimizer;
+
 		int tick = 0;
 	public:
 		ACCDOA(const bool training_mode, 
@@ -37,21 +43,22 @@ class ACCDOA {
 			feature_extractor(config, sed_features, doa_features),
 			writer(zarr_path, config, training_mode),
 			config(config),
-			model(M2M_AST(config))
-			{
-			std::cout << "Initialized ACCDOA with device: " << device_name << " and zarr path: " << zarr_path << std::endl;
-			audio_device.start();
-			
+			sed_model(config),
+			doa_model(config)
+			{			
 			// Initialize the model and optimizer
-			init(model, training_mode);
-			torch::optim::AdamWOptions opt_options(/*lr=*/ 1e-4);
+			init(sed_model, training_mode);
+			init(doa_model, training_mode);
+			torch::optim::AdamWOptions opt_options(1e-4); 
 			opt_options.weight_decay(0.01);
-			torch::optim::AdamW optimizer(model->parameters(), opt_options);
+			sed_optimizer = std::make_unique<torch::optim::AdamW>(sed_model->parameters(), opt_options);
+			doa_optimizer = std::make_unique<torch::optim::AdamW>(doa_model->parameters(), opt_options);
+			audio_device.start();
 
 			std::cout << "START" << std::endl;
 			while (config.on) {
 				if (feature_extractor.feature_extract(audio_device)) {
-					writer.add_frame(features);
+					writer.add_frame(sed_features, doa_features);
 					if (writer.count >= config.frame_max) {
 						config.on.store(false);
 					}
@@ -64,13 +71,20 @@ class ACCDOA {
 			}
 			if (training) {
 				std::cout << "Begining traning process." << std::endl;
-				if (writer.training_process()) std::cout << "Training complete." << std::endl;
-				else std::cerr << "Training failed." << std::endl;
+				// to be finished
 			}
 			std::cout << "END" << std::endl;
 		}
 		~ACCDOA() {
 			config.on.store(false);
+			sed_optimizer.reset();
+			doa_optimizer.reset();
+			sed_model = nullptr;
+			doa_model = nullptr;
+			// CUDA sync operation, probably need this around most CUDA operations seems like a wrapper for cudaDeviceSynchronize().
+			if (torch::cuda::is_available()) {
+				torch::cuda::synchronize();
+			}
 		}
 };
 

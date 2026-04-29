@@ -38,12 +38,10 @@ struct DatasetProcessor {
         write_chunk[1]++;
     }
 
-    xt::xarray<float> read() {
+    void read() {
         ds->readChunk(read_chunk, read_buffer.data());
+        std::cout << "Read chunk at offset: [" << read_chunk[1] << "]" << std::endl;
         read_chunk[1]++;
-		std::cout << "Read chunk at offset: [" << read_chunk[1] << "]" << std::endl;
-        return (xt::adapt(read_buffer.data(), read_buffer.size(),
-            xt::no_ownership(), read_buffer.shape()));
     }
 
     void batch() {
@@ -76,7 +74,7 @@ struct DatasetProcessor {
         z5::types::CompressionOptions cOpts = {{"codec", "zstd"}, {"level", 3}, {"shuffle", 1}, {"blocksize", 0}};
         ds = z5::createDataset(root, name, "float32", ds_shape, chunk_shape, "blosc", cOpts);
 
-		// Initialize offsets and read buffer
+		// Initialize offsets and read buffer, offsets not intended to be reset, del/free construction after batching.
         write_chunk = { 0, 0, 0};
         read_chunk = { 0, 0, 0};
         read_buffer = xt::empty<float>(std::array<size_t, 3>{chunk_shape[0], chunk_shape[1], chunk_shape[2]});
@@ -93,8 +91,13 @@ struct DatasetProcessor {
         }
     };
 
-	// Delete default constructor to prevent uninitialized instances
-	DatasetProcessor() = delete;
+    ~DatasetProcessor() {
+        x_in = torch::Tensor();
+        read_buffer = xt::xtensor<float, 3>();
+        if (ds) {
+            ds.reset();
+        }
+    }
 };
 
 class Writer {
@@ -202,7 +205,7 @@ class Writer {
                     ma_rb_commit_write(&task_queue, sizeof(Chunk*));
                 }
 
-				// Drop active task pointer and local index for the next cssssssssssssssssssssssssssssssssssssssssssssssssssssssssssshunk
+				// Drop active task pointer and local index for the next chunk
                 active_chunk = nullptr;
                 current_local_idx = 0;
 				count += config.frame_time_seq;
