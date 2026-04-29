@@ -10,6 +10,9 @@
 #include <kfr/dft.hpp>
 #include <kfr/audio.hpp>
 #include <kfr/simd.hpp>
+// xtensor
+#include <xtensor/containers/xarray.hpp>
+#include "z5/multiarray/xtensor_access.hxx"
 
 class MelFilterBank {
 	private:
@@ -75,7 +78,8 @@ class MelFilterBank {
 class FeatureExtractor {
 	private:
 		const SystemConfig& config;
-		std::vector<float>& features;
+		xt::xtensor<float, 2>& sed_features;
+		xt::xtensor<float, 2>& doa_features;
 		const float log_max_vol;
 
 		// constants
@@ -115,21 +119,19 @@ class FeatureExtractor {
 		kfr::univector<float> linear_temp = kfr::univector<float>(config.fft_bins);
 		kfr::univector<kfr::complex<float>> conj_temp = kfr::univector<kfr::complex<float>>(config.fft_bins);
 
-		void log_mel_normalize(kfr::univector_ref<kfr::complex<float>> freqs, float*& mel_ptr) {
+		void log_mel_normalize(kfr::univector_ref<kfr::complex<float>> freqs, float* mel_ptr) {
 			mag_temp = kfr::cabs(freqs);
 			for (size_t m = 0; m < config.mel_bins; ++m) {
 				mel_temp[m] = kfr::dotproduct(mag_temp, mel.filters[m]);
 			}
 			kfr::univector_ref<float> mel_out(mel_ptr, config.mel_bins);
 			mel_out = kfr::log10(mel_temp + 1e-7f);
-
-			mel_ptr += config.mel_bins;
 		};
 
 		void calc_mel_iv(kfr::univector_ref<kfr::complex<float>> w,
 			kfr::univector_ref<kfr::complex<float>> conj_w,
 			kfr::univector_ref<kfr::complex<float>> directional,
-			float*& iv_ptr) {
+			float* iv_ptr) {
 			kfr::univector_ref<float> iv_out(iv_ptr, config.mel_bins);
 			linear_temp = kfr::real(conj_w * directional) / (kfr::cabssqr(w) + 1e-7f);
 			// Compress the linear intensity vector into Mel bands for consistency
@@ -140,30 +142,25 @@ class FeatureExtractor {
 				// Dot product the linear IV with the filter, then normalize by the filter sum
 				iv_out[m] = kfr::dotproduct(linear_temp, mel.filters[m]) / (filter_sum + 1e-7f);
 			}
-
-			iv_ptr += config.mel_bins;
 		}
 
-		std::vector<float> extract(kfr::audio_data_interleaved audio) {
-			// Convert interleaved audio to planar format for easier processing
-			kfr::audio_data_planar planar_audio(audio);
-
+		void extract(std::vector<float>& buffer) {
 			// Assumption: Hop length is half the FFT size.
 			// Position in the channel block for the history buffer.
 			float* b_ptr = planar_buffer.data();
-			int ch = 0;
-			planar_audio.for_channel([&](kfr::univector_ref<kfr::fbase> ch_data) {
+			for (int ch = 0; ch < config.channels; ++ch) {
 				// Create a reference to the current channel's buffer block
 				kfr::univector_ref<float> ch_buffer(b_ptr, config.fft_size);
 				// Shift the buffer to the left for the channel block
 				ch_buffer.slice(0, config.history_size) = ch_buffer.slice(config.hop_length, config.history_size);
-				// 2. Insert New Data: Place the 160 new samples at the end (indices 352-511)
+				// 2. Insert New Data: Place the hop_length new samples at the end
+				kfr::strided_channel<float> ch_data{ buffer.data() + ch, config.hop_length, (size_t)config.channels };
 				ch_buffer.slice(config.history_size, config.hop_length) = ch_data;
 				// Apply window function to the whole channel buffer and execute the FFT
 				r_window = ch_buffer * window;
 				plan.execute(ch_freqs[ch], r_window, temp_buffer);
-				b_ptr += config.fft_size; ch++;
-			});
+				b_ptr += config.fft_size;
+			}
 
 			// Compute the spatial features (W, x, y) from the channel FFTs
 			w_freq = ch_freqs[1] + ch_freqs[0] + ch_freqs[3] + ch_freqs[2]; // Omni
@@ -172,36 +169,33 @@ class FeatureExtractor {
 			kfr::univector_ref<kfr::complex<float>> conj_w(conj_temp.data(), config.fft_bins);
 			conj_w = kfr::cconj(w_freq);
 
-			// Log-mel features (64) (W), with intensity vectors (x,y)
-			
-			float* mel_ptr = features.data();
-			float* iv_x_ptr = features.data() + config.mel_bins;
-			float* iv_y_ptr = features.data() + 2 * config.mel_bins;
+			// --- 1. SED Features (1 Channel: Logmel Omni) ---
+			log_mel_normalize(w_freq, xt::row(sed_features, 0).data());
 
-			// Calculate log-mel of W
-			log_mel_normalize(w_freq, mel_ptr);
+			// --- 2. DOAE Features (5 Channels) ---
+			// 1-3. Logmel features for W, X, Y
+			log_mel_normalize(w_freq, xt::row(doa_features, 0).data());
+			log_mel_normalize(x_freq, xt::row(doa_features, 1).data());
+			log_mel_normalize(y_freq, xt::row(doa_features, 2).data());
 
-			// Calculate mel-intensity vectors for x and y
-			calc_mel_iv(w_freq, conj_w, x_freq, iv_x_ptr);
-			calc_mel_iv(w_freq, conj_w, y_freq, iv_y_ptr);
-
-			// Final return should be {log-mel W (128), mel-IV_X (128), mel-IV_Y (128)} = 384 features total
-			return features;
+			// 4-5. Intensity Vectors for X, Y
+			calc_mel_iv(w_freq, conj_w, x_freq, xt::row(doa_features, 3).data());
+			calc_mel_iv(w_freq, conj_w, y_freq, xt::row(doa_features, 4).data());
 		};
 
 	public:
-		FeatureExtractor(const SystemConfig& config, std::vector<float>& features) 
+		FeatureExtractor(const SystemConfig& config, xt::xtensor<float, 2>& sed, xt::xtensor<float, 2>& doa)
 			: config(config), 
 			log_max_vol(std::log1p(static_cast<float>(config.fft_size) / 2.0f)),
-			features(features) {}
+			sed_features(sed),
+			doa_features(doa) {}
 
 		bool feature_extract(AudioDevice& audioDevice) {
 			std::vector<float> buffer(static_cast<size_t>(audioDevice.framelimit * audioDevice.channels));
 			while (!audioDevice.read(buffer.data())) {
 				std::this_thread::sleep_for(std::chrono::milliseconds(1));
 			}
-			kfr::audio_data_interleaved audio = kfr::audio_data_interleaved(buffer.data(), config.channels, config.hop_length);
-			std::vector<float> features = extract(audio);
+			extract(buffer);
 			return true;
 		};
 };

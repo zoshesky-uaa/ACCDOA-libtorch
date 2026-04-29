@@ -32,17 +32,15 @@ plt = _ensure_module("matplotlib.pyplot", "matplotlib", "matplotlib")
 
 def plot_frames(trial_path: Path, frame_count = 500) -> None:
     f = z5py.File(str(trial_path), mode="r")
-    mel = f["features/mel"]
-    iv_x = f["features/iv_x"]
-    iv_y = f["features/iv_y"]
+    features = f["features"]
 
-    n = min(frame_count, int(mel.shape[0]))
+    n = min(frame_count, int(features.shape[1]))
     if n == 0:
         raise RuntimeError("No frames found to plot.")
 
-    mel_100 = np.asarray(mel[:n, :], dtype=np.float32)   
-    ivx_100 = np.asarray(iv_x[:n, :], dtype=np.float32)  
-    ivy_100 = np.asarray(iv_y[:n, :], dtype=np.float32) 
+    mel_100 = np.asarray(features[0, :n, :], dtype=np.float32)
+    ivx_100 = np.asarray(features[1, :n, :], dtype=np.float32)
+    ivy_100 = np.asarray(features[2, :n, :], dtype=np.float32)
 
     fig, ax = plt.subplots(2, 2, figsize=(14, 8))
 
@@ -64,9 +62,9 @@ def plot_frames(trial_path: Path, frame_count = 500) -> None:
     ax[1, 0].set_ylabel("FFT bin")
     fig.colorbar(im2, ax=ax[1, 0])
 
-    ax[1, 1].plot(np.mean(mel_100, axis=1), label="mel mean")
-    ax[1, 1].plot(np.mean(ivx_100, axis=1), label="iv_x mean")
-    ax[1, 1].plot(np.mean(ivy_100, axis=1), label="iv_y mean")
+    ax[1, 1].plot(np.mean(mel_100, axis=1), label="mel mean", alpha=0.8, linewidth=0.4)
+    ax[1, 1].plot(np.mean(ivx_100, axis=1), label="iv_x mean", alpha=0.8, linewidth=0.4)
+    ax[1, 1].plot(np.mean(ivy_100, axis=1), label="iv_y mean", alpha=0.8, linewidth=0.4)
     ax[1, 1].set_title(f"Per-frame means ({frame_count} frames)")
     ax[1, 1].set_xlabel("Frame")
     ax[1, 1].set_ylabel("Mean value")
@@ -81,4 +79,4 @@ def plot_frames(trial_path: Path, frame_count = 500) -> None:
 
 if __name__ == "__main__":
     trial = Path("trials/trial_1.zarr").resolve()
-    plot_frames(trial, frame_count=2000)
+    plot_frames(trial, frame_count=10000)
