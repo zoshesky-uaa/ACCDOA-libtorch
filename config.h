@@ -1,5 +1,7 @@
 #pragma once
 #include <atomic>
+#include <vector>
+
 // Time Window (Output) = 3s
 struct SystemConfig {
 	// Controllable parameters:
@@ -9,11 +11,12 @@ struct SystemConfig {
 	size_t hop_length; // Hop length
 	double target_res; // Target output resolution in second (i.e. 0.1s for 100ms)
 	size_t batch_size; // Batch size for training
-	size_t batch_amount; // Number of batches to process for training;
 	int64_t se_count; // Maximum unique sound events for SED head
 	int64_t track_count; // Maximum amount of overlapping events for DOAE head
 
 	// Calculated/Constant parameters:
+	size_t epochs = 50; // Number of training epochs
+	size_t batch_amount = 5; // Number of batches to process for training;
 	size_t channels = 4; // Number of audio channels (e.g., 4 for first-order ambisonics)
 	int64_t time_window = 3;
 	int64_t patch_size = 16; // Patch size (P) (h x w kernel)
@@ -29,8 +32,6 @@ struct SystemConfig {
 	int64_t conv_stride = patch_size - patch_overlap; //Convolution stride (S) : (P - O)
 	size_t fft_bins = fft_size / 2 + 1; // Number of frequency bins from the FFT
 	size_t history_size = fft_size - hop_length; // Number of samples that overlap between consecutive STFT frames
-	int64_t feature_channels = 3; // (Mel, IV_X, IV_Y)
-	int64_t space_dim = 2; // (X, Y)
 	/*
 	Temporal (time-features) Patches (n_t) : 29 (floor((T - P) / S) + 1)
 	Frequency (mel-features) Patches (n_f) : 12 (floor((M - P) / S) + 1))
@@ -41,6 +42,31 @@ struct SystemConfig {
 	int64_t num_patches = n_t * n_f; // Total Patches (n) (n_t * n_f)
 	int64_t t_prime = time_window / target_res;
 	int64_t total_seq = t_prime + num_patches; // Total sequence length (seq) (t' + n)
+	/*
+	SED Features (sed_featureset)
+	Concept: 1-channel log-mel spectrogram.
+	 read_buffer: [1, config.frame_time_seq, config.mel_bins] (e.g., [1, 300, 128])
+	x_in: [config.batch_size, 1, config.frame_time_seq, config.mel_bins] (e.g., [24, 1, 300, 128])
+
+	DOA Features (doa_featureset)
+	Concept: 5-channel features (1 log-mel + 4 intensity vectors).
+	read_buffer: [5, config.frame_time_seq, config.mel_bins] (e.g., [5, 300, 128])
+	x_in: [config.batch_size, 5, config.frame_time_seq, config.mel_bins] (e.g., [24, 5, 300, 128])
+
+	SED Labels (sed_labelset)
+	Concept: Binary flag reference per class track label.
+	read_buffer: [1, config.frame_time_seq, (se_count * track_count * 1)]
+	x_in: [config.batch_size, 1, config.frame_time_seq, (se_count * track_count * 1)]
+
+	DOA Labels (doa_labelset)
+	Concept: Flattened Cartesian coordinates (X, Y).
+	read_buffer: [1, config.frame_time_seq, (se_count * track_count * 2)]
+	x_in: [config.batch_size, 1, config.frame_time_seq, (se_count * track_count * 2)]
+	*/
+	std::vector<size_t> sed_fet_buffer_dim = {1, frame_time_seq, mel_bins}; // SED feature buffer dimension
+	std::vector<size_t> doa_fet_buffer_dim = {5, frame_time_seq, mel_bins}; // DOA feature buffer dimension
+	std::vector<size_t > sed_label_buffer_dim = { 1, (size_t)t_prime, (size_t)(se_count * track_count * 1) }; // SED label buffer dimension
+	std::vector<size_t> doa_label_buffer_dim = { 1, (size_t)t_prime, (size_t)(se_count * track_count * 2) }; // DOA label buffer dimension
 	std::atomic<bool> on{ true }; // Control flag
 
 
@@ -50,7 +76,6 @@ struct SystemConfig {
 		size_t hop_length, 
 		double target_res, 
 		size_t batch_size, 
-		size_t batch_amount, 
 		int64_t se_count, 
 		int64_t track_count)
 		: sample_rate(sample_rate),
@@ -58,13 +83,12 @@ struct SystemConfig {
 		hop_length(hop_length),
 		mel_bins(mel_bins),
 		batch_size(batch_size),
-		batch_amount(batch_amount),
 		se_count(se_count),
 		track_count(track_count),
 		target_res(target_res) {
 	}
 
-	// The default constructor creates a approximately 6 minute runtime 
+	// The default constructor creates a approximately 6 minute runtime, batch amount is hard-coded to 5.
 	SystemConfig()
 		: sample_rate(16000),
 		channels(4),
@@ -73,7 +97,6 @@ struct SystemConfig {
 		target_res(0.1),
 		mel_bins(128),
 		batch_size(24), 
-		batch_amount(5),
 		se_count(5),
 		track_count(3) {
 	}

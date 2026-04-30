@@ -21,6 +21,13 @@ struct Chunk {
     }
 };
 
+enum class DatasetType {
+    SED_FEATURES,
+    DOA_FEATURES,
+    SED_LABELS,
+    DOA_LABELS
+};
+
 struct DatasetProcessor {
 	const SystemConfig& config;
     std::shared_ptr<z5::Dataset> ds;
@@ -41,13 +48,13 @@ struct DatasetProcessor {
     void read() {
         ds->readChunk(read_chunk, read_buffer.data());
         std::cout << "Read chunk at offset: [" << read_chunk[1] << "]" << std::endl;
-        read_chunk[1]++;
+		read_chunk[1]++;
     }
 
-    void batch() {
+    torch::Tensor batch() {
         batch_idx = 0;
         bool use_cuda = torch::cuda::is_available();
-        while (batch_idx < config.batch_size) {
+        while (batch_idx < config.batch_size  && config.on) {
 			read();
             torch::Tensor chunk_view = torch::from_blob(
                 read_buffer.data(),
@@ -57,38 +64,71 @@ struct DatasetProcessor {
             x_in[batch_idx].copy_(chunk_view, /*non_blocking=*/use_cuda);
 			batch_idx++;
         }
+        return x_in;
     }
+
+    void read_reset() {
+        read_chunk = { 0, 0, 0 };
+	}
 
     DatasetProcessor(z5::filesystem::handle::File root, 
                         const std::string& name, 
                         size_t channels, 
                         const SystemConfig& config,
+		                DatasetType type,
                         bool training_mode) : config(config) {
-        chunk_shape = { channels , config.frame_time_seq, (size_t)config.mel_bins };
-        ds_shape = { channels, config.frame_max, (size_t)config.mel_bins };
+        
+		// Define dataset shape and chunk shape based on the dataset type
+        auto options = torch::TensorOptions()
+            .dtype(torch::kFloat32)
+            .device(torch::cuda::is_available() ? torch::kCUDA : torch::kCPU);
+        int64_t b_size = training_mode ? (int64_t)config.batch_size : 1;
+        
+        switch (type) {
+            case DatasetType::SED_FEATURES:
+                chunk_shape = { config.sed_fet_buffer_dim[0], config.sed_fet_buffer_dim[1], config.sed_fet_buffer_dim[2] };
+                ds_shape = { config.sed_fet_buffer_dim[0], config.frame_max, config.sed_fet_buffer_dim[2] };
+                x_in = torch::empty({ b_size, (int64_t)config.sed_fet_buffer_dim[0], (int64_t)config.sed_fet_buffer_dim[1], (int64_t)config.sed_fet_buffer_dim[2] }, options);
+                break;
+            case DatasetType::DOA_FEATURES:
+                chunk_shape = { config.doa_fet_buffer_dim[0], config.doa_fet_buffer_dim[1], config.doa_fet_buffer_dim[2] };
+                ds_shape = { config.doa_fet_buffer_dim[0], config.frame_max, config.doa_fet_buffer_dim[2] };
+                x_in = torch::empty({ b_size, (int64_t)config.doa_fet_buffer_dim[0], (int64_t)config.doa_fet_buffer_dim[1], (int64_t)config.doa_fet_buffer_dim[2] }, options);
+                break;
+            case DatasetType::SED_LABELS:
+                chunk_shape = { config.sed_label_buffer_dim[0], config.sed_label_buffer_dim[1], config.sed_label_buffer_dim[2] };
+                ds_shape = { config.sed_label_buffer_dim[0], config.frame_max, config.sed_label_buffer_dim[2] };
+                x_in = torch::empty({ b_size, (int64_t)config.sed_label_buffer_dim[0], (int64_t)config.sed_label_buffer_dim[1], (int64_t)config.sed_label_buffer_dim[2] }, options);
+                break;
+            case DatasetType::DOA_LABELS:
+                chunk_shape = { config.doa_label_buffer_dim[0], config.doa_label_buffer_dim[1], config.doa_label_buffer_dim[2] };
+                ds_shape = { config.doa_label_buffer_dim[0], config.frame_max, config.doa_label_buffer_dim[2] };
+                x_in = torch::empty({ b_size, (int64_t)config.doa_label_buffer_dim[0], (int64_t)config.doa_label_buffer_dim[1], (int64_t)config.doa_label_buffer_dim[2] }, options);
+                break;
+        };
 
         assert(ds_shape[1] % chunk_shape[1] == 0 &&
             ds_shape[2] % chunk_shape[2] == 0 &&
             "Dataset_shape must be divisible by chunk_shape in all dimensions");
-        // Define compression options for the datasets
-        z5::types::CompressionOptions cOpts = {{"codec", "zstd"}, {"level", 3}, {"shuffle", 1}, {"blocksize", 0}};
-        ds = z5::createDataset(root, name, "float32", ds_shape, chunk_shape, "blosc", cOpts);
+        
+        // 2. Force ChannelsLast layout for 4D convolution/patching efficiency 
+        if (torch::cuda::is_available()) {
+            x_in = x_in.to(torch::MemoryFormat::ChannelsLast);
+        }
+        
+        // For Writer/Reader operations
+        if (z5::filesystem::handle::Dataset(root, name).exists()) {
+            ds = z5::openDataset(root, name); 
+        }
+        else {
+            z5::types::CompressionOptions cOpts = { {"codec", "zstd"}, {"level", 3}, {"shuffle", 1}, {"blocksize", 0} };
+            ds = z5::createDataset(root, name, "float32", ds_shape, chunk_shape, "blosc", cOpts); 
+        }
 
 		// Initialize offsets and read buffer, offsets not intended to be reset, del/free construction after batching.
         write_chunk = { 0, 0, 0};
         read_chunk = { 0, 0, 0};
         read_buffer = xt::empty<float>(std::array<size_t, 3>{chunk_shape[0], chunk_shape[1], chunk_shape[2]});
-        
-        auto options = torch::TensorOptions()
-            .dtype(torch::kFloat32)
-            .device(torch::cuda::is_available() ? torch::kCUDA : torch::kCPU);
-        int64_t b_size = training_mode ? (int64_t)config.batch_size : 1;
-        x_in = torch::empty({ b_size, (int64_t)channels, (int64_t)config.frame_time_seq, (int64_t)config.mel_bins }, options);
-
-        // 2. Force ChannelsLast layout for 4D convolution/patching efficiency 
-        if (torch::cuda::is_available()) {
-            x_in = x_in.to(torch::MemoryFormat::ChannelsLast);
-        }
     };
 
     ~DatasetProcessor() {
@@ -100,12 +140,20 @@ struct DatasetProcessor {
     }
 };
 
+class Reader {
+    public:
+        DatasetProcessor sed_labelset;
+        DatasetProcessor doa_labelset;
+        Reader(const std::string& path, const SystemConfig& config)
+            : sed_labelset(z5::filesystem::handle::File(path), "sed_labels", 1, config, DatasetType::SED_LABELS, true),
+              doa_labelset(z5::filesystem::handle::File(path), "doa_labels", 5, config, DatasetType::DOA_LABELS, true) {
+        }
+};
+
 class Writer {
     private:
         // z5 uses xtensor-like views to handle multi-dimensional data
         z5::filesystem::handle::File root;
-        DatasetProcessor sed_fproc;
-        DatasetProcessor doa_fproc;
 
 		const bool training_mode;
         const SystemConfig& config;
@@ -138,8 +186,8 @@ class Writer {
                     std::memcpy(&full_chunk, readPtr, sizeof(Chunk*));
                     ma_rb_commit_read(&task_queue, sizeof(Chunk*));
                     // Write the chunks to the respective datasets at the correct offset
-                    sed_fproc.write(full_chunk->sed_features);
-                    doa_fproc.write(full_chunk->doa_features);
+                    sed_featureset.write(full_chunk->sed_features);
+                    doa_featureset.write(full_chunk->doa_features);
                     // Write an empty task pointer back to the free pool for reuse.
                     void* writePtr;
                     if (rb_acquire_write_task_ptr(free_pool, writePtr)) {
@@ -154,13 +202,14 @@ class Writer {
         };
     public:
         int count = 0;
-
+        DatasetProcessor sed_featureset;
+        DatasetProcessor doa_featureset;
 
         Writer(const std::string& path, const SystemConfig& config, const bool training_mode)
 			: config(config), training_mode(training_mode),
             root(z5::filesystem::handle::File(path)),
-            sed_fproc(DatasetProcessor(root, "sed_features", 1, config, training_mode)),
-            doa_fproc(DatasetProcessor(root, "doa_features", 5, config, training_mode)) {
+            sed_featureset(DatasetProcessor(root, "sed_features", 1, config, DatasetType::SED_FEATURES, training_mode)),
+            doa_featureset(DatasetProcessor(root, "doa_features", 5, config, DatasetType::DOA_FEATURES, training_mode)) {
             if (training_mode) {
 			    // Initialize ring buffers for task management
                 ma_rb_init_ex(sizeof(Chunk*), task_limit, 0, nullptr, nullptr, &task_queue);

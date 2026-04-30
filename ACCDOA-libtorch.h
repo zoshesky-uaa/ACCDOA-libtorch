@@ -47,8 +47,8 @@ class ACCDOA {
 			doa_model(config)
 			{			
 			// Initialize the model and optimizer
-			init(sed_model, training_mode);
-			init(doa_model, training_mode);
+			sed_model->init(training_mode);
+			doa_model->init(training_mode);
 			torch::optim::AdamWOptions opt_options(1e-4); 
 			opt_options.weight_decay(0.01);
 			sed_optimizer = std::make_unique<torch::optim::AdamW>(sed_model->parameters(), opt_options);
@@ -70,7 +70,22 @@ class ACCDOA {
 				return;
 			}
 			if (training) {
-				std::cout << "Begining traning process." << std::endl;
+				std::cout << "Begining training process." << std::endl;
+				Reader reader(zarr_path, config);
+				sed_model->batch_train(
+							*sed_optimizer,
+							config,
+							&writer.sed_featureset, 
+							nullptr, 
+							&reader.sed_labelset, 
+							nullptr);
+				doa_model->batch_train(
+							*doa_optimizer,
+							config,
+							nullptr,
+							&writer.doa_featureset,
+							&reader.sed_labelset,
+							&reader.doa_labelset);
 				// to be finished
 			}
 			std::cout << "END" << std::endl;
