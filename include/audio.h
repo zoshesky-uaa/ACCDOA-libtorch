@@ -6,7 +6,7 @@
 #include <string>
 #include <stdexcept>
 #include <cstring>
-#include "../config.h"
+#include "config.h"
 
 class AudioDevice {
 	private:

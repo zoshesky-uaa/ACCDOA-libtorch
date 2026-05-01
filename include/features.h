@@ -3,16 +3,18 @@
 #include <algorithm>
 #include <vector>
 #include "audio.h"
-#include "../config.h"
+#include "config.h"
+
+// xtensor
+#include <xtensor/containers/xarray.hpp>
+#include "z5/multiarray/xtensor_access.hxx" // IWYU pragma: keep
+
 // kfr
 #include <kfr/base.hpp>
 #include <kfr/dsp.hpp>
 #include <kfr/dft.hpp>
 #include <kfr/audio.hpp>
 #include <kfr/simd.hpp>
-// xtensor
-#include <xtensor/containers/xarray.hpp>
-#include "z5/multiarray/xtensor_access.hxx"
 
 class MelFilterBank {
 	private:
@@ -78,6 +80,10 @@ class MelFilterBank {
 class FeatureExtractor {
 	private:
 		const SystemConfig& config;
+		// MelFilterBank instance for Mel spectrogram calculation
+		MelFilterBank mel;
+
+		// References to shared feature buffers
 		xt::xtensor<float, 2>& sed_features;
 		xt::xtensor<float, 2>& doa_features;
 		const float log_max_vol;
@@ -94,9 +100,6 @@ class FeatureExtractor {
 
 		// Hann window for the FFT
 		kfr::univector<float> window = kfr::window_hann<float>(config.fft_size);
-
-		// Mel filter bank for 64 Mel bands, initialized with the 16kHz sample rate
-		MelFilterBank mel = MelFilterBank(config.sample_rate, config.fft_size, config.mel_bins);
 
 		// typedefs
 		using fftdata = kfr::univector<kfr::complex<float>>;
@@ -188,7 +191,8 @@ class FeatureExtractor {
 			: config(config), 
 			log_max_vol(std::log1p(static_cast<float>(config.fft_size) / 2.0f)),
 			sed_features(sed),
-			doa_features(doa) {}
+			doa_features(doa),
+			mel(MelFilterBank(config.sample_rate, config.fft_size, config.mel_bins)) {}
 
 		bool feature_extract(AudioDevice& audioDevice) {
 			std::vector<float> buffer(static_cast<size_t>(audioDevice.framelimit * audioDevice.channels));

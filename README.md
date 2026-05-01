@@ -3,7 +3,8 @@
 A recording application that utilizes quadrophonic sound and determines object directionality via SELDnet ACCDOA model. 
 Model implementation is underway, feature extraction process is developed.
 
-## Installation
+## Building
+__Setup__: Adjust the CMake settings to your system capabilities, including CUDA Toolkit and cuDNN.
 1. Clone the repository:
    ```bash
    git clone https://github.com/zoshesky-uaa/ACCDOA-libtorch.git

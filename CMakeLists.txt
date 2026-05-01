@@ -1,13 +1,6 @@
-﻿# CMakeList.txt : CMake project for ACCDOA-libtorch, include source and define
-# project specific logic here.
-cmake_minimum_required(VERSION 3.24 FATAL_ERROR)
-set(CMAKE_CXX_COMPILER "clang-cl" CACHE STRING "" FORCE)  
-set(CMAKE_C_COMPILER   "clang-cl" CACHE STRING "" FORCE)
-project (ACCDOA-libtorch LANGUAGES CXX CUDA)
-
-set(CMAKE_CXX_STANDARD 20)
-set(CMAKE_CXX_STANDARD_REQUIRED ON)
-set(CMAKE_CXX_EXTENSIONS OFF)
+﻿cmake_minimum_required(VERSION 3.24 FATAL_ERROR)
+project(ACCDOA-libtorch LANGUAGES CXX)
+enable_language(CUDA)
 
 # Torch setup
 list(APPEND CMAKE_PREFIX_PATH "${CMAKE_CURRENT_SOURCE_DIR}/external/libtorch")
@@ -17,6 +10,7 @@ list(APPEND CMAKE_PREFIX_PATH "${LIBTORCH_PATH}")
 unset(CMAKE_CUDA_ARCHITECTURES)
 unset(CMAKE_CUDA_ARCHITECTURES CACHE)
 set(TORCH_CUDA_ARCH_LIST "12.0")
+set(CAFFE2_USE_CUDNN ON CACHE BOOL "" FORCE)
 find_package(Torch REQUIRED)
 
 # VCPKG dependencies
@@ -55,11 +49,16 @@ set(WITH_ZSTD ON CACHE BOOL "" FORCE)
 FetchContent_Declare(z5 GIT_REPOSITORY https://github.com/constantinpape/z5 GIT_TAG master)
 FetchContent_MakeAvailable(z5)
 
-add_executable(ACCDOA-libtorch ACCDOA-libtorch.cpp "model/model.h")
+add_library(accdoa_core INTERFACE)
 
-set_property(TARGET ACCDOA-libtorch PROPERTY COMPILE_FLAGS "${TORCH_CXX_FLAGS}")
+target_include_directories(accdoa_core INTERFACE 
+    ${CMAKE_CURRENT_SOURCE_DIR}/src
+    ${MINIAUDIO_INCLUDE_DIRS}
+    ${TORCH_INSTALL_PREFIX}/include
+    ${TORCH_INSTALL_PREFIX}/include/torch/csrc/api/include
+)
 
-target_link_libraries(ACCDOA-libtorch PRIVATE 
+target_link_libraries(accdoa_core INTERFACE 
     xtl    
     xtensor::use_xsimd
     ZLIB::ZLIB
@@ -75,31 +74,50 @@ target_link_libraries(ACCDOA-libtorch PRIVATE
     ${TORCH_LIBRARIES}
 )
 
-target_include_directories(ACCDOA-libtorch PRIVATE ${MINIAUDIO_INCLUDE_DIRS})
-
-target_compile_definitions(ACCDOA-libtorch PRIVATE 
+target_compile_definitions(accdoa_core INTERFACE 
     NOMINMAX             
     _USE_MATH_DEFINES
     KFR_BASETYPE_F32    
-    CMK_AVX2           
+    CMK_AVX2         
+    _HAS_CXX20=1       # ADD THIS: Forces MSVC to expose all C++20 
 )
 
-target_compile_options(ACCDOA-libtorch PRIVATE 
+target_compile_options(accdoa_core INTERFACE 
     /utf-8
-    -mavx2                       # Force AVX2
-    /bigobj                      # Handles template bloat from Torch/xtensor
-    -Wno-deprecated-declarations # Suppresses noisy warnings
+    -mavx2                       
+    /bigobj                      
+    -Wno-deprecated-declarations 
+    /std:c++20
+    /EHsc
 )
+
+# The Executables
+add_executable(accdoa_gen 
+    src/gen_main.cpp 
+    src/generate.h   
+)
+target_link_libraries(accdoa_gen PRIVATE accdoa_core)
+
+add_executable(accdoa_train 
+    src/train_main.cpp 
+    src/train.h     
+)
+target_link_libraries(accdoa_train PRIVATE accdoa_core)
+
+add_executable(accdoa_infer 
+    src/infer_main.cpp 
+    src/inference.h  
+)
+target_link_libraries(accdoa_infer PRIVATE accdoa_core)
 
 file(GLOB TORCH_DLLS "${TORCH_INSTALL_PREFIX}/lib/*.dll")
-add_custom_command(TARGET ACCDOA-libtorch POST_BUILD
-    COMMAND ${CMAKE_COMMAND} -E copy_if_different
-    ${TORCH_DLLS}
-    $<TARGET_FILE_DIR:ACCDOA-libtorch>
-)
 
-# Enable Hot Reload (Edit and Continue)
-if (POLICY CMP0141)
-    cmake_policy(SET CMP0141 NEW)
-    set(CMAKE_MSVC_DEBUG_INFORMATION_FORMAT "$<IF:$<AND:$<C_COMPILER_ID:MSVC>,$<CXX_COMPILER_ID:MSVC>>,$<$<CONFIG:Debug,RelWithDebInfo>:EditAndContinue>,$<$<CONFIG:Debug,RelWithDebInfo>:ProgramDatabase>>")
-endif()
+foreach(tgt accdoa_gen accdoa_train accdoa_infer)
+    set_property(TARGET ${tgt} PROPERTY COMPILE_FLAGS "${TORCH_CXX_FLAGS}")
+    
+    add_custom_command(TARGET ${tgt} POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different
+        ${TORCH_DLLS}
+        $<TARGET_FILE_DIR:${tgt}>
+    )
+endforeach()

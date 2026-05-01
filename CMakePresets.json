@@ -8,12 +8,26 @@
       "binaryDir": "${sourceDir}/out/build/${presetName}",
       "installDir": "${sourceDir}/out/install/${presetName}",
       "cacheVariables": {
-        "CMAKE_C_COMPILER": "clang-cl.exe",
-        "CMAKE_CXX_COMPILER": "clang-cl.exe",
+        "CMAKE_C_COMPILER": "C:/Program Files/Microsoft Visual Studio/18/Community/VC/Tools/Llvm/x64/bin/clang-cl.exe",
+        "CMAKE_CXX_COMPILER": "C:/Program Files/Microsoft Visual Studio/18/Community/VC/Tools/Llvm/x64/bin/clang-cl.exe",
+        "CMAKE_MAKE_PROGRAM": "C:/Program Files/Microsoft Visual Studio/18/Community/Common7/IDE/CommonExtensions/Microsoft/CMake/Ninja/ninja.exe",
+        
+        "CMAKE_CXX_COMPILER_FRONTEND_VARIANT": "MSVC",
+        "CMAKE_C_COMPILER_FRONTEND_VARIANT": "MSVC",
+
+        "CUDNN_INCLUDE_PATH": "C:/Program Files/NVIDIA/CUDNN/v9.21/include/13.2",
+        "CUDNN_LIBRARY_PATH": "C:/Program Files/NVIDIA/CUDNN/v9.21/lib/13.2/x64/cudnn.lib",
+        "CUDNN_INCLUDE_DIR": "C:/Program Files/NVIDIA/CUDNN/v9.21/include/13.2",
+        "CUDNN_LIBRARY": "C:/Program Files/NVIDIA/CUDNN/v9.21/lib/13.2/x64/cudnn.lib",
+        "CUDNN_ROOT": "C:/Program Files/NVIDIA/CUDNN/v9.21",
+
+        "CMAKE_CUDA_HOST_COMPILER": "C:/Program Files/Microsoft Visual Studio/18/Community/VC/Tools/MSVC/14.50.35717/bin/HostX64/x64/cl.exe",
         "CMAKE_CUDA_COMPILER": "C:/Program Files/NVIDIA GPU Computing Toolkit/CUDA/v13.2/bin/nvcc.exe",
-        "CMAKE_TOOLCHAIN_FILE": "C:\\Program Files\\Microsoft Visual Studio\\18\\Community\\VC\\vcpkg\\scripts\\buildsystems\\vcpkg.cmake",
+
+        "CMAKE_TOOLCHAIN_FILE": "C:/Program Files/Microsoft Visual Studio/18/Community/VC/vcpkg/scripts/buildsystems/vcpkg.cmake",
         "VCPKG_MANIFEST_MODE": "ON",
-        "VCPKG_TARGET_TRIPLET": "x64-windows"
+        "VCPKG_TARGET_TRIPLET": "x64-windows",
+        "CMAKE_EXPORT_COMPILE_COMMANDS": "ON" 
       },
       "condition": {
         "type": "equals",
@@ -36,7 +50,11 @@
     {
       "name": "x64-release",
       "displayName": "x64 Release",
-      "inherits": "x64-debug",
+      "inherits": "windows-base", 
+      "architecture": {
+        "value": "x64",
+        "strategy": "external"
+      },
       "cacheVariables": {
         "CMAKE_BUILD_TYPE": "Release"
       }

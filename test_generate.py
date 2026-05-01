@@ -1,4 +1,4 @@
-# Helper script on how to interact with the trainer/interface
+# Helper script that does the generation of files for training whilst BeamNG is running.
 import subprocess
 import json
 from pathlib import Path
@@ -17,7 +17,7 @@ except ModuleNotFoundError:
 
 # Call path for application
 repo_root = Path(__file__).resolve().parent
-application_path = (repo_root / "out/build/x64-debug/ACCDOA-libtorch.exe").resolve()
+application_path = (repo_root / "out/build/x64-debug/accdoa_gen.exe").resolve()
 if not application_path.exists():
     raise FileNotFoundError(f"EXE not found: {application_path}")
 
@@ -37,7 +37,6 @@ root_group = z5py.File(base_path / f"trial_{i}.zarr", mode='w')
 config_data = {
     "device_name": "Voicemeeter Out B1 (VB-Audio Voicemeeter VAIO)",
     "zarr_path": str((base_path / f"trial_{i}.zarr").as_posix()),
-    "training_mode": True
 }
 
 process = subprocess.Popen(

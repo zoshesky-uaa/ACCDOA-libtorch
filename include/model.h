@@ -1,12 +1,7 @@
+#pragma once
 #include <torch/torch.h>
-#include "../config.h"
-#include "../audio/fsm.h"
-
-
-enum ModelType : int64_t {
-    SED = 1,
-    DOAE = 5
-};
+#include "config.h"
+#include "dataset.h"
 
 // WIP
 struct PatchEmbeddingImpl : torch::nn::Module {
@@ -34,6 +29,7 @@ struct M2M_ASTImpl : torch::nn::Module {
 	torch::nn::Linear head{ nullptr };
     int64_t t_prime;
 	ModelType model_type;
+    torch::optim::Optimizer* optimizer = nullptr;
 
     M2M_ASTImpl(const SystemConfig& config, enum ModelType model_type): 
         t_prime(config.t_prime), model_type(model_type) {
@@ -52,7 +48,7 @@ struct M2M_ASTImpl : torch::nn::Module {
             case ModelType::SED:
                 head = register_module("SED", torch::nn::Linear(config.embed_dim, config.se_count));
                 break;
-            case ModelType::DOAE:
+            case ModelType::DOA:
                 head = register_module("DOAE", torch::nn::Linear(config.embed_dim, config.se_count * 2 * config.track_count));
                 break;
         };
@@ -76,7 +72,7 @@ struct M2M_ASTImpl : torch::nn::Module {
         switch (model_type) {
             case ModelType::SED:
                 return torch::sigmoid(head->forward(output_tokens));
-            case ModelType::DOAE:
+            case ModelType::DOA:
                 return torch::tanh(head->forward(output_tokens));
 		};
     }
@@ -89,8 +85,7 @@ struct M2M_ASTImpl : torch::nn::Module {
         torch::Tensor s_target = sed_target.squeeze(1);
 		if (model_type == ModelType::SED) {
             return torch::nn::functional::binary_cross_entropy(prediction, s_target);
-        }
-        else {
+        }   else {
             torch::Tensor d_target = doa_target.squeeze(1);
             torch::Tensor active_mask = (s_target > 0.5).to(torch::kFloat16);
             // Expand mask to match spatial dimensions (x, y). Repeats [B, T', Cl, 1] -> [B, T', Cl, 2]
@@ -101,38 +96,40 @@ struct M2M_ASTImpl : torch::nn::Module {
         }
     }
 
-    void batch_train(
-        torch::optim::AdamW& optimizer,
+    void set_optimizer(torch::optim::Optimizer* opt) {
+        this->optimizer = opt;
+    }
+
+    void adjust_learning_rate(int epoch, int total_epochs, int warmup_epochs, float target_lr) {
+        if (!this->optimizer) return;
+        double new_lr = 0.0;
+        // Linear warmup for the first 'warmup_epochs', then cosine annealing for the rest of the training
+        if (epoch < warmup_epochs) {
+            // Phase 1: Linear Warmup (0 -> target_lr)
+            new_lr = target_lr * (static_cast<double>(epoch + 1) / warmup_epochs);
+        } else {
+            // Phase 2: Cosine Annealing (target_lr -> 0)
+            double progress = static_cast<double>(epoch - warmup_epochs) / (total_epochs - warmup_epochs);
+            new_lr = 0.5 * target_lr * (1.0 + std::cos(M_PI * progress));
+        }
+        // Update the learning rate for all parameter groups in the optimizer
+        for (auto& param_group : this->optimizer->param_groups()) {
+            if (param_group.has_options()) {
+                static_cast<torch::optim::AdamWOptions&>(param_group.options()).set_lr(new_lr);
+            }
+        }
+    }
+    std::tuple<float, float> batch_train(
         const SystemConfig& config,
         DatasetProcessor* sed_featureset,
         DatasetProcessor* doa_featureset,
         DatasetProcessor* sed_labelset,
         DatasetProcessor* doa_labelset) {
         torch::Tensor x_in, sed_target, doa_target;
-        for (int epoch = 0, epoch_loss = 0; epoch < config.epochs && config.on; ++epoch) {
-            this->train();
-            // Training loop per epoch
-            for (int batch_idx = 0; batch_idx < (config.batch_amount-1) && config.on; ++batch_idx) {
-                if (this->model_type == ModelType::SED) {
-                    x_in = sed_featureset->batch();
-                    sed_target = sed_labelset->batch();
-                }
-                else {
-                    x_in = doa_featureset->batch();
-                    doa_target = doa_labelset->batch();
-                    sed_target = sed_labelset->batch();
-                }
-                optimizer.zero_grad();
-                torch::Tensor prediction = this->forward(x_in);
-                torch::Tensor loss = this->loss(prediction, sed_target, doa_target);
-                loss.backward();
-                optimizer.step();
-                epoch_loss += loss.item<float>();
-            }
-
-			// Validation loop per epoch
-            this->eval();
-            torch::NoGradGuard no_grad;
+        float total_train_loss = 0.0f;
+        this->train();
+        // Training loop per epoch
+        for (int batch_idx = 0; batch_idx < (config.batch_amount-1) && config.on; ++batch_idx) {
             if (this->model_type == ModelType::SED) {
                 x_in = sed_featureset->batch();
                 sed_target = sed_labelset->batch();
@@ -142,21 +139,47 @@ struct M2M_ASTImpl : torch::nn::Module {
                 doa_target = doa_labelset->batch();
                 sed_target = sed_labelset->batch();
             }
-            torch::Tensor val_prediction = this->forward(x_in);
-            torch::Tensor val_loss = this->loss(val_prediction, sed_target, doa_target);
+            this->optimizer->zero_grad();
+            torch::Tensor prediction = this->forward(x_in);
+            torch::Tensor loss = this->loss(prediction, sed_target, doa_target);
+            loss.backward();
+            // Gradient clipping to prevent exploding gradients
+            torch::nn::utils::clip_grad_norm_(this->parameters(), /*max_norm=*/1.0);
+            this->optimizer->step();
 
-			sed_featureset->read_reset();
-			doa_featureset->read_reset();
-			sed_labelset->read_reset();
-			doa_labelset->read_reset();
-            // Validation loop will go here later
-			std::cout << "Epoch: " << epoch + 1 << "/" << config.epochs
-                << " | Training Loss: " << epoch_loss / config.batch_amount << std::endl;
-            torch::save(this, "m2m_ast_epoch_" + std::to_string(epoch) + ".pt");
+            total_train_loss += loss.to(torch::kFloat32).item<float>();
         }
-    }
 
-    void init(bool training_mode) {
+        // Validation loop per epoch
+        this->eval();
+        torch::NoGradGuard no_grad;
+        if (this->model_type == ModelType::SED) {
+            x_in = sed_featureset->batch();
+            sed_target = sed_labelset->batch();
+        }
+        else {
+            x_in = doa_featureset->batch();
+            doa_target = doa_labelset->batch();
+            sed_target = sed_labelset->batch();
+        }
+        torch::Tensor val_prediction = this->forward(x_in);
+        torch::Tensor val_loss = this->loss(val_prediction, sed_target, doa_target);
+
+        sed_featureset->read_reset();
+        doa_featureset->read_reset();
+        sed_labelset->read_reset();
+        doa_labelset->read_reset(); 
+        // Return average training loss and validation loss for the epoch
+        return {(total_train_loss / config.batch_amount), val_loss.to(torch::kFloat32).item<float>()};
+    }
+    // WIP will need to make a return
+    void inference(torch::Tensor& x_in) {
+        torch::NoGradGuard no_grad;
+        torch::Tensor prediction = this->forward(x_in);
+        // Post-processing of predictions will go here later
+	}
+
+    void init() {
         torch::nn::init::normal_(this->cls_tokens, 0.0, 0.02);
         this->cls_tokens.clamp_(-0.04, 0.04);
 
@@ -172,7 +195,7 @@ struct M2M_ASTImpl : torch::nn::Module {
         // Move model to GPU if available
         if (torch::cuda::is_available()) {
             std::cout << "CUDA is available. Moving model to GPU." << std::endl;
-            this->to(torch::kCUDA, torch::kFloat16);
+            this->to(torch::kCUDA, torch::kFloat32);
             // Explicitly set 4D weights (Convolution) to ChannelsLast (NHWC)
             for (auto& param : this->parameters()) {
                 if (param.dim() == 4) {
@@ -185,17 +208,14 @@ struct M2M_ASTImpl : torch::nn::Module {
             this->to(torch::kCPU);
         }
     }
+
+
 };
 TORCH_MODULE(M2M_AST);
 
-
-
-
-
-
 // Takes pretained positional embeddings from a ViT model and interpolates them to fit the M2M_AST's new input dimensions.
 // use with caution not tested
-void interpolate_pos_encoding(M2M_AST& model, torch::Tensor pretrained_pos_embed, const SystemConfig& config) {
+inline void interpolate_pos_encoding(M2M_AST& model, torch::Tensor pretrained_pos_embed, const SystemConfig& config) {
     torch::NoGradGuard no_grad;
 
     // 1. Separate the CLS tokens from the spatial patches

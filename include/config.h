@@ -1,6 +1,23 @@
 #pragma once
 #include <atomic>
 #include <vector>
+#include <optional>
+#include <iostream>
+#include <thread>
+#include <string>
+#include <nlohmann/json.hpp>
+
+enum ModelType : int64_t {
+	SED = 1,
+	DOA = 5
+};
+
+enum class DatasetType {
+	SED_FEATURES,
+	DOA_FEATURES,
+	SED_LABELS,
+	DOA_LABELS
+};
 
 // Time Window (Output) = 3s
 struct SystemConfig {
@@ -16,6 +33,7 @@ struct SystemConfig {
 
 	// Calculated/Constant parameters:
 	size_t epochs = 50; // Number of training epochs
+	size_t warmup_epochs = 5; // Number of warmup epochs for learning rate scheduling
 	size_t batch_amount = 5; // Number of batches to process for training;
 	size_t channels = 4; // Number of audio channels (e.g., 4 for first-order ambisonics)
 	int64_t time_window = 3;
@@ -42,6 +60,7 @@ struct SystemConfig {
 	int64_t num_patches = n_t * n_f; // Total Patches (n) (n_t * n_f)
 	int64_t t_prime = time_window / target_res;
 	int64_t total_seq = t_prime + num_patches; // Total sequence length (seq) (t' + n)
+	size_t inference_amount = target_res * static_cast<size_t>(sample_rate / hop_length); // Number of frames to infer on per inference step (e.g., 10 for 100ms)
 	/*
 	SED Features (sed_featureset)
 	Concept: 1-channel log-mel spectrogram.
@@ -101,3 +120,63 @@ struct SystemConfig {
 		track_count(3) {
 	}
 };
+
+
+static constexpr int DEBUG_LIMIT = 26;
+template<typename Cmd>
+inline std::optional<Cmd> read_input(SystemConfig& config, bool JSON) {
+	std::string raw_input;
+	int i = 1;
+
+	std::cout << (JSON ? "Provide JSON signature:" : "Processing... Type 'exit' to stop.") << std::endl;
+	while (i < DEBUG_LIMIT) {
+		if (!std::getline(std::cin, raw_input) || raw_input == "exit") break;
+		if (raw_input.empty()) continue;
+		if (JSON) {
+			if (nlohmann::json::accept(raw_input)) {
+				try {
+					auto j = nlohmann::json::parse(raw_input);
+					return j.get<Cmd>();
+				}
+				catch (const nlohmann::json::exception& e) {
+					std::cerr << "JSON Mapping Error: " << e.what() << std::endl;
+				}
+				catch (const std::exception& e) {
+					std::cerr << "Input Error: " << e.what() << std::endl;
+				}
+			}
+		} else {
+			std::cerr << "Invalid JSON syntax. Try again." << std::endl;
+		}
+		std::cout << "Provide JSON signature (Attempt " << ++i << "):" << std::endl;
+	}
+	config.on.store(false);
+	std::cout << "Stopping application." << std::endl;
+	return std::nullopt;
+}
+
+template<typename Task, typename Cmd>
+inline int model_process() {
+	SystemConfig config = SystemConfig();
+	auto cmd = read_input<Cmd>(config, true);
+	if (cmd.has_value()) {
+		// Read for exit command
+		std::jthread exit_thread([&config](std::stop_token st) {
+			read_input<nlohmann::json>(config, false);
+			});
+		// Operate on model task
+		std::jthread model_thread([cmd, &config](std::stop_token st) {
+			try {
+				Task instance(cmd.value(), config);
+			}
+			catch (const std::exception& e) {
+				std::cerr << "Task error: " << e.what() << std::endl;
+				config.on.store(false);
+			}
+		});
+		while (config.on) {
+			std::this_thread::sleep_for(std::chrono::milliseconds(100));
+		}
+	}
+	return 0;
+}
