@@ -129,7 +129,7 @@ struct M2M_ASTImpl : torch::nn::Module {
         float total_train_loss = 0.0f;
         this->train();
         // Training loop per epoch
-        for (int batch_idx = 0; batch_idx < (config.batch_amount-1) && config.on; ++batch_idx) {
+        for (int batch_idx = 0; batch_idx < (config.batch_amount-1) && config.on.load(); ++batch_idx) {
             if (this->model_type == ModelType::SED) {
                 x_in = sed_featureset->batch();
                 sed_target = sed_labelset->batch();

@@ -112,7 +112,7 @@ public:
 		std::cout << "Models initialized for inference." << std::endl;
 		std::this_thread::sleep_for(std::chrono::seconds(1)); 
 		std::cout << "START" << std::endl;
-		while (config.on) {
+		while (config.on.load(std::memory_order_relaxed)) {
 			if (feature_extractor.feature_extract(audio_device)) {
 				bool ready_sed = sed_buffer.add_frame(sed_features);
                 bool ready_doa = doa_buffer.add_frame(doa_features);

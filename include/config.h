@@ -171,12 +171,14 @@ inline int model_process() {
 			}
 			catch (const std::exception& e) {
 				std::cerr << "Task error: " << e.what() << std::endl;
-				config.on.store(false);
+				config.on.store(false, std::memory_order_relaxed);
 			}
 		});
-		while (config.on) {
+		while (config.on.load(std::memory_order_relaxed)) {
 			std::this_thread::sleep_for(std::chrono::milliseconds(100));
 		}
 	}
+	// Prevents a readline hang
+	std::exit(0); 
 	return 0;
 }

@@ -48,7 +48,7 @@ private:
 		float best_val_loss = std::numeric_limits<float>::max();
 
 		// 3. The Epoch Loop
-        for (int epoch = 0; epoch < config.epochs; ++epoch) {
+        for (int epoch = 0; epoch < config.epochs && config.on.load(std::memory_order_relaxed); ++epoch) {
             model->adjust_learning_rate(epoch, config.epochs, config.warmup_epochs, 1e-4);
             
             float epoch_train_loss = 0.0f;
@@ -104,7 +104,7 @@ public:
 	}
 
 	~Train() {
-		config.on.store(false);
+		config.on.store(false, std::memory_order_relaxed);
 	}
 };
 

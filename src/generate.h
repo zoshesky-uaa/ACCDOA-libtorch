@@ -43,11 +43,11 @@ public:
 		std::cout << "Intiated: Writing to " << cmd.zarr_path << std::endl;
 		std::this_thread::sleep_for(std::chrono::seconds(1)); 
 		std::cout << "START" << std::endl;
-		while (config.on) {
+		while (config.on.load(std::memory_order_relaxed)) {
 			if (feature_extractor.feature_extract(audio_device)) {
 				writer.add_frame(sed_features, doa_features);
 				if (writer.count >= config.frame_max) {
-					config.on.store(false);
+					return;
 				}
 				std::cout << std::to_string(tick++) << std::endl;
 			}
@@ -60,6 +60,6 @@ public:
 	}
 
 	~Generate() {
-		config.on.store(false);
+		config.on.store(false, std::memory_order_relaxed);
 	}
 };
