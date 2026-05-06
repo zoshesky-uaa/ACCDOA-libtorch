@@ -5,14 +5,16 @@
 #include <iostream>
 #include <thread>
 #include <string>
+#include <cstdint>
+#include <cmath>
 #include <nlohmann/json.hpp>
 
-enum ModelType : int64_t {
+enum ModelType : std::uint8_t {
 	SED = 1,
 	DOA = 5
 };
 
-enum class DatasetType {
+enum class DatasetType : std::uint8_t {
 	SED_FEATURES,
 	DOA_FEATURES,
 	SED_LABELS,
@@ -45,22 +47,24 @@ struct SystemConfig {
 	int64_t att_headers = 12; // Attention heads (h) : 12 
 	int64_t embed_dim = 768; // (h x 64) 
 	// --------------------------------
-	size_t frame_time_seq = time_window * (sample_rate / hop_length); // Frames per time window 
+	double input_frame_time = static_cast<double>(hop_length) / static_cast<double>(sample_rate); // Time per input frame (e.g., 0.01s for 10ms hop at 16kHz)
+	size_t frame_time_seq = (static_cast<size_t>(time_window) * sample_rate) / hop_length; // Frames per time window 
 	size_t frame_max = frame_time_seq * batch_size * batch_amount; //Simulation maximum length in frames
 	int64_t conv_stride = patch_size - patch_overlap; //Convolution stride (S) : (P - O)
-	size_t fft_bins = fft_size / 2 + 1; // Number of frequency bins from the FFT
+	size_t fft_bins = (fft_size / 2) + 1; // Number of frequency bins from the FFT
 	size_t history_size = fft_size - hop_length; // Number of samples that overlap between consecutive STFT frames
 	/*
 	Temporal (time-features) Patches (n_t) : 29 (floor((T - P) / S) + 1)
 	Frequency (mel-features) Patches (n_f) : 12 (floor((M - P) / S) + 1))
 	Total Patches (n) = (n_t * n_f)
 	*/
-	int64_t n_t = (time_window * (sample_rate / hop_length) - patch_size) / conv_stride + 1;
-	int64_t n_f = (mel_bins - patch_size) / conv_stride + 1;
-	int64_t num_patches = n_t * n_f; // Total Patches (n) (n_t * n_f)
-	int64_t t_prime = time_window / target_res;
-	int64_t total_seq = t_prime + num_patches; // Total sequence length (seq) (t' + n)
-	size_t inference_amount = target_res * static_cast<size_t>(sample_rate / hop_length); // Number of frames to infer on per inference step (e.g., 10 for 100ms)
+	int64_t t_prime = static_cast<int64_t>(std::llround(static_cast<double>(time_window) / target_res));
+	size_t label_max = static_cast<size_t>(t_prime) * batch_size * batch_amount;
+	size_t inference_amount = static_cast<size_t>(std::llround(target_res * (static_cast<double>(sample_rate) / static_cast<double>(hop_length)))); // Number of frames to infer on per inference step (e.g., 10 for 100ms)
+	int64_t n_t = ((static_cast<int64_t>(frame_time_seq) - patch_size) / conv_stride) + 1;
+    int64_t n_f = ((static_cast<int64_t>(mel_bins) - patch_size) / conv_stride) + 1;
+    int64_t num_patches = n_t * n_f; // Total Patches (n) (n_t * n_f)
+    int64_t total_seq = t_prime + num_patches; // Total sequence length (seq) (t' + n)
 	/*
 	SED Features (sed_featureset)
 	Concept: 1-channel log-mel spectrogram.
@@ -84,8 +88,8 @@ struct SystemConfig {
 	*/
 	std::vector<size_t> sed_fet_buffer_dim = {1, frame_time_seq, mel_bins}; // SED feature buffer dimension
 	std::vector<size_t> doa_fet_buffer_dim = {5, frame_time_seq, mel_bins}; // DOA feature buffer dimension
-	std::vector<size_t > sed_label_buffer_dim = { 1, (size_t)t_prime, (size_t)(se_count * track_count * 1) }; // SED label buffer dimension
-	std::vector<size_t> doa_label_buffer_dim = { 1, (size_t)t_prime, (size_t)(se_count * track_count * 2) }; // DOA label buffer dimension
+	std::vector<size_t > sed_label_buffer_dim = { 1, static_cast<size_t>(t_prime), static_cast<size_t>(se_count * track_count * 1) }; // SED label buffer dimension
+	std::vector<size_t> doa_label_buffer_dim = { 1, static_cast<size_t>(t_prime), static_cast<size_t>(se_count * track_count * 2) }; // DOA label buffer dimension
 	std::atomic<bool> on{ true }; // Control flag
 
 
@@ -116,7 +120,7 @@ struct SystemConfig {
 		target_res(0.1),
 		mel_bins(128),
 		batch_size(24), 
-		se_count(5),
+		se_count(2),
 		track_count(3) {
 	}
 };
@@ -126,32 +130,32 @@ static constexpr int DEBUG_LIMIT = 26;
 template<typename Cmd>
 inline std::optional<Cmd> read_input(SystemConfig& config, bool JSON) {
 	std::string raw_input;
-	int i = 1;
+	int debug_count = 1;
 
-	std::cout << (JSON ? "Provide JSON signature:" : "Processing... Type 'exit' to stop.") << std::endl;
-	while (i < DEBUG_LIMIT) {
-		if (!std::getline(std::cin, raw_input) || raw_input == "exit") break;
-		if (raw_input.empty()) continue;
+	std::cout << (JSON ? "Provide JSON signature:" : "Processing... Type 'exit' to stop.") << '\n';
+	while (debug_count < DEBUG_LIMIT) {
+		if (!std::getline(std::cin, raw_input) || raw_input == "exit") {break;}
+		if (raw_input.empty()) {continue;}
 		if (JSON) {
 			if (nlohmann::json::accept(raw_input)) {
 				try {
-					auto j = nlohmann::json::parse(raw_input);
-					return j.get<Cmd>();
+					auto json = nlohmann::json::parse(raw_input);
+					return json.get<Cmd>();
 				}
 				catch (const nlohmann::json::exception& e) {
-					std::cerr << "JSON Mapping Error: " << e.what() << std::endl;
+					std::cerr << "JSON Mapping Error: " << e.what() << '\n';
 				}
 				catch (const std::exception& e) {
-					std::cerr << "Input Error: " << e.what() << std::endl;
+					std::cerr << "Input Error: " << e.what() << '\n';
 				}
 			}
 		} else {
-			std::cerr << "Invalid JSON syntax. Try again." << std::endl;
+			std::cerr << "Invalid JSON syntax. Try again." << '\n';
 		}
-		std::cout << "Provide JSON signature (Attempt " << ++i << "):" << std::endl;
+		std::cout << "Provide JSON signature (Attempt " << ++debug_count << "):" << '\n';
 	}
 	config.on.store(false);
-	std::cout << "Stopping application." << std::endl;
+	std::cout << "Stopping application." << '\n';
 	return std::nullopt;
 }
 
@@ -161,16 +165,16 @@ inline int model_process() {
 	auto cmd = read_input<Cmd>(config, true);
 	if (cmd.has_value()) {
 		// Read for exit command
-		std::jthread exit_thread([&config](std::stop_token st) {
+		std::jthread exit_thread([&config](const std::stop_token& stop_token) {
 			read_input<nlohmann::json>(config, false);
 			});
 		// Operate on model task
-		std::jthread model_thread([cmd, &config](std::stop_token st) {
+		std::jthread model_thread([cmd, &config](const std::stop_token& stop_token) {
 			try {
 				Task instance(cmd.value(), config);
 			}
 			catch (const std::exception& e) {
-				std::cerr << "Task error: " << e.what() << std::endl;
+				std::cerr << "Task error: " << e.what() << '\n';
 				config.on.store(false, std::memory_order_relaxed);
 			}
 		});

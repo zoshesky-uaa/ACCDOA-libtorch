@@ -1,4 +1,5 @@
 #pragma once
+#ifndef ACCDOA_NO_TORCH
 #include <torch/torch.h>
 #include "config.h"
 #include "dataset.h"
@@ -14,9 +15,9 @@ struct PatchEmbeddingImpl : torch::nn::Module {
         proj = register_module("Linear Projection", torch::nn::Conv2d(opts));
     }
 
-    torch::Tensor forward(torch::Tensor x) {
-        x = proj->forward(x);
-        return x.flatten(2).transpose(1, 2);
+    torch::Tensor forward(torch::Tensor input) {
+        input = proj->forward(input);
+        return input.flatten(2).transpose(1, 2);
     }
 };
 TORCH_MODULE(PatchEmbedding);
@@ -39,7 +40,7 @@ struct M2M_ASTImpl : torch::nn::Module {
         pos_embed = register_parameter("Position Embedding", torch::randn({ 1, config.total_seq, config.embed_dim }));
 
         torch::nn::TransformerEncoderLayerOptions layer_opts(config.embed_dim, config.att_headers);
-        layer_opts.dropout(0.1).activation(torch::kGELU);
+        layer_opts.dropout(0.1).activation(torch::kGELU); 
         torch::nn::TransformerEncoderOptions encoder_opts(torch::nn::TransformerEncoderLayer(layer_opts), config.enc_layers);
         encoder = register_module("Transformer Encoder", torch::nn::TransformerEncoder(encoder_opts));
 
@@ -54,19 +55,19 @@ struct M2M_ASTImpl : torch::nn::Module {
         };
     }
 
-    torch::Tensor forward(torch::Tensor x) {
-        int64_t batch_size = x.size(0);
+    torch::Tensor forward(torch::Tensor input) {
+        int64_t batch_size = input.size(0);
 
-        torch::Tensor patches = patch_embed->forward(x);
+        torch::Tensor patches = patch_embed->forward(input);
         torch::Tensor expanded_cls = cls_tokens.expand({ batch_size, -1, -1 });
 
-        x = torch::cat({ expanded_cls, patches }, 1);
-        x = x + pos_embed;
-        x = x.transpose(0, 1);
-        x = encoder->forward(x);
-        x = x.transpose(0, 1);
+        input = torch::cat({ expanded_cls, patches }, 1);
+        input = input + pos_embed;
+        input = input.transpose(0, 1);
+        input = encoder->forward(input);
+        input = input.transpose(0, 1);
 
-        torch::Tensor output_tokens = x.slice(1, 0, t_prime);
+        torch::Tensor output_tokens = input.slice(1, 0, t_prime);
 
 		// SED head uses sigmoid for multi-label classification, DOAE head uses tanh for regression; activation
         switch (model_type) {
@@ -77,40 +78,41 @@ struct M2M_ASTImpl : torch::nn::Module {
 		};
     }
 
-
     torch::Tensor loss(torch::Tensor& prediction, 
                         torch::Tensor& sed_target, 
-                        torch::Tensor& doa_target) {
+                        torch::Tensor& doa_target) const {
         // Predictions do not have the channel dimension, squeeze it out.
         torch::Tensor s_target = sed_target.squeeze(1);
 		if (model_type == ModelType::SED) {
             return torch::nn::functional::binary_cross_entropy(prediction, s_target);
-        }   else {
-            torch::Tensor d_target = doa_target.squeeze(1);
-            torch::Tensor active_mask = (s_target > 0.5).to(torch::kFloat16);
-            // Expand mask to match spatial dimensions (x, y). Repeats [B, T', Cl, 1] -> [B, T', Cl, 2]
-            active_mask = active_mask.repeat_interleave(2, /*dim=*/-1);
-            auto mse_opts = torch::nn::functional::MSELossFuncOptions().reduction(torch::kNone);
-            torch::Tensor raw_mse = torch::nn::functional::mse_loss(prediction, d_target, mse_opts);
-            return (raw_mse * active_mask).sum() / (active_mask.sum() + 1e-8);
         }
+        // DOA loss calculation otherwise
+        torch::Tensor d_target = doa_target.squeeze(1);
+        torch::Tensor active_mask = (s_target > 0.5).to(torch::kFloat16); 
+        // Expand mask to match spatial dimensions (x, y). Repeats [B, T', Cl, 1] -> [B, T', Cl, 2]
+        active_mask = active_mask.repeat_interleave(2, /*dim=*/-1);
+        auto mse_opts = torch::nn::functional::MSELossFuncOptions().reduction(torch::kNone);
+        torch::Tensor raw_mse = torch::nn::functional::mse_loss(prediction, d_target, mse_opts);
+        return (raw_mse * active_mask).sum() / (active_mask.sum() + 1e-8); 
     }
 
     void set_optimizer(torch::optim::Optimizer* opt) {
         this->optimizer = opt;
     }
 
-    void adjust_learning_rate(int epoch, int total_epochs, int warmup_epochs, float target_lr) {
-        if (!this->optimizer) return;
+    void adjust_learning_rate(float epoch, float total_epochs, float warmup_epochs, float target_lr) const {
+        if (this->optimizer == nullptr) {
+            return;
+        }
         double new_lr = 0.0;
         // Linear warmup for the first 'warmup_epochs', then cosine annealing for the rest of the training
         if (epoch < warmup_epochs) {
             // Phase 1: Linear Warmup (0 -> target_lr)
-            new_lr = target_lr * (static_cast<double>(epoch + 1) / warmup_epochs);
+            new_lr = target_lr * ((epoch + 1) / warmup_epochs);
         } else {
             // Phase 2: Cosine Annealing (target_lr -> 0)
             double progress = static_cast<double>(epoch - warmup_epochs) / (total_epochs - warmup_epochs);
-            new_lr = 0.5 * target_lr * (1.0 + std::cos(M_PI * progress));
+            new_lr = 0.5 * target_lr * (1.0 + std::cos(M_PI * progress)); 
         }
         // Update the learning rate for all parameter groups in the optimizer
         for (auto& param_group : this->optimizer->param_groups()) {
@@ -125,8 +127,10 @@ struct M2M_ASTImpl : torch::nn::Module {
         DatasetProcessor* doa_featureset,
         DatasetProcessor* sed_labelset,
         DatasetProcessor* doa_labelset) {
-        torch::Tensor x_in, sed_target, doa_target;
-        float total_train_loss = 0.0f;
+        torch::Tensor x_in;
+        torch::Tensor sed_target;
+        torch::Tensor doa_target;
+        float total_train_loss = 0.0F;
         this->train();
         // Training loop per epoch
         for (int batch_idx = 0; batch_idx < (config.batch_amount-1) && config.on.load(); ++batch_idx) {
@@ -144,7 +148,7 @@ struct M2M_ASTImpl : torch::nn::Module {
             torch::Tensor loss = this->loss(prediction, sed_target, doa_target);
             loss.backward();
             // Gradient clipping to prevent exploding gradients
-            torch::nn::utils::clip_grad_norm_(this->parameters(), /*max_norm=*/1.0);
+            torch::nn::utils::clip_grad_norm_(this->parameters(), /*max_norm=*/1.0); 
             this->optimizer->step();
 
             total_train_loss += loss.to(torch::kFloat32).item<float>();
@@ -170,7 +174,7 @@ struct M2M_ASTImpl : torch::nn::Module {
         sed_labelset->read_reset();
         doa_labelset->read_reset(); 
         // Return average training loss and validation loss for the epoch
-        return {(total_train_loss / config.batch_amount), val_loss.to(torch::kFloat32).item<float>()};
+        return {total_train_loss / static_cast<float>(config.batch_amount), val_loss.to(torch::kFloat32).item<float>()};
     }
     // WIP will need to make a return
     void inference(torch::Tensor& x_in) {
@@ -180,21 +184,21 @@ struct M2M_ASTImpl : torch::nn::Module {
 	}
 
     void init() {
-        torch::nn::init::normal_(this->cls_tokens, 0.0, 0.02);
-        this->cls_tokens.clamp_(-0.04, 0.04);
+        torch::nn::init::normal_(this->cls_tokens, 0.0, 0.02); 
+        this->cls_tokens.clamp_(-0.04, 0.04); 
 
-        torch::nn::init::normal_(this->pos_embed, 0.0, 0.02);
-        this->pos_embed.clamp_(-0.04, 0.04);
+        torch::nn::init::normal_(this->pos_embed, 0.0, 0.02); 
+        this->pos_embed.clamp_(-0.04, 0.04); 
         // Initialize whatever head was registered
         if (this->head) {
-            torch::nn::init::normal_(this->head->weight, 0.0, 0.02);
-            this->head->weight.clamp_(-0.04, 0.04);
-            torch::nn::init::constant_(this->head->bias, 0.0);
+            torch::nn::init::normal_(this->head->weight, 0.0, 0.02); 
+            this->head->weight.clamp_(-0.04, 0.04); 
+            torch::nn::init::constant_(this->head->bias, 0.0); 
         }
 
         // Move model to GPU if available
         if (torch::cuda::is_available()) {
-            std::cout << "CUDA is available. Moving model to GPU." << std::endl;
+            std::cout << "CUDA is available. Moving model to GPU." << '\n';
             this->to(torch::kCUDA, torch::kFloat32);
             // Explicitly set 4D weights (Convolution) to ChannelsLast (NHWC)
             for (auto& param : this->parameters()) {
@@ -204,7 +208,7 @@ struct M2M_ASTImpl : torch::nn::Module {
             }
         }
         else {
-            std::cout << "CUDA is not available. Running on CPU." << std::endl;
+            std::cout << "CUDA is not available. Running on CPU." << '\n';
             this->to(torch::kCPU);
         }
     }
@@ -215,7 +219,7 @@ TORCH_MODULE(M2M_AST);
 
 // Takes pretained positional embeddings from a ViT model and interpolates them to fit the M2M_AST's new input dimensions.
 // use with caution not tested
-inline void interpolate_pos_encoding(M2M_AST& model, torch::Tensor pretrained_pos_embed, const SystemConfig& config) {
+inline void interpolate_pos_encoding(M2M_AST& model, const torch::Tensor& pretrained_pos_embed, const SystemConfig& config) {
     torch::NoGradGuard no_grad;
 
     // 1. Separate the CLS tokens from the spatial patches
@@ -225,7 +229,7 @@ inline void interpolate_pos_encoding(M2M_AST& model, torch::Tensor pretrained_po
     torch::Tensor patch_tokens = pretrained_pos_embed.slice(1, num_extra_tokens);
 
     // 2. Reshape to the original source grid (e.g., 14x14)
-    int64_t old_grid = std::sqrt(patch_tokens.size(1));
+    int64_t old_grid = static_cast<int64_t>(std::sqrt(patch_tokens.size(1)));
     patch_tokens = patch_tokens.reshape({ 1, old_grid, old_grid, config.embed_dim })
         .permute({ 0, 3, 1, 2 }); // [B, C, H, W] for interpolation
 
@@ -247,3 +251,4 @@ inline void interpolate_pos_encoding(M2M_AST& model, torch::Tensor pretrained_po
     // Final pos_embed for your M2M_AST
     model->pos_embed.copy_(torch::cat({ averaged_cls, interpolated_patches }, 1));
 }
+#endif

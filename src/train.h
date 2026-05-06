@@ -13,8 +13,8 @@
 #include <c10/cuda/CUDACachingAllocator.h>
 
 struct TrainCmd {
-	std::string device_name = "";
-	std::string zarr_dir = ""; // Directory of zarr files, will iterate "trial_x" zarrs for their data.
+	std::string device_name;
+	std::string zarr_dir; // Directory of zarr files, will iterate "trial_x" zarrs for their data.
 	std::int16_t zarr_amount = 0; // Ideally a divisible of 5, >= 100.
 	NLOHMANN_DEFINE_TYPE_INTRUSIVE(TrainCmd, device_name, zarr_dir, zarr_amount)
 };
@@ -24,19 +24,19 @@ private:
 	SystemConfig& config;;
 	// Zarr Dir
 	std::string zarr_dir;
-	std::unique_ptr<torch::optim::AdamW> optimizer_generate(M2M_AST& model) {
+	static std::unique_ptr<torch::optim::AdamW> optimizer_generate(M2M_AST& model) {
 		torch::optim::AdamWOptions opt_options(1e-4);
 		opt_options.weight_decay(0.01);
 		return std::make_unique<torch::optim::AdamW>(model->parameters(), opt_options);
 	}
 
-	std::string zarr_path_generator(std::int16_t trial_num) {
+	std::string zarr_path_generator(int trial_num) {
 		return zarr_dir + "/trial_" + std::to_string(trial_num);
 	}
 
 	void run_model(ModelType type, const std::string& save_name, int zarr_amount) {
 		std::string stage_name = (type == ModelType::SED) ? "SED" : "DOA";
-		std::cout << "Starting " << stage_name << " training for " << zarr_amount << " zarr files." << std::endl;
+		std::cout << "Starting " << stage_name << " training for " << zarr_amount << " zarr files." << '\n';
 		// 1. Model Initialization
 		M2M_AST model(config, type);
         model->init();
@@ -49,10 +49,13 @@ private:
 
 		// 3. The Epoch Loop
         for (int epoch = 0; epoch < config.epochs && config.on.load(std::memory_order_relaxed); ++epoch) {
-            model->adjust_learning_rate(epoch, config.epochs, config.warmup_epochs, 1e-4);
+            model->adjust_learning_rate(static_cast<float>(epoch), 
+								static_cast<float>(config.epochs), 
+								static_cast<float>(config.warmup_epochs), 
+								1e-4);
             
-            float epoch_train_loss = 0.0f;
-            float epoch_val_loss = 0.0f;
+            float epoch_train_loss = 0.0F;
+            float epoch_val_loss = 0.0F;
 
             for (int zarr_count = 0; zarr_count < zarr_amount; ++zarr_count) {
                 std::string zarr_path = zarr_path_generator(zarr_count);
@@ -72,18 +75,18 @@ private:
             }
 
             // Average the losses across zarr files for the epoch
-            epoch_train_loss /= zarr_amount;
-            epoch_val_loss /= zarr_amount;
+            epoch_train_loss /= static_cast<float>(zarr_amount);
+            epoch_val_loss /= static_cast<float>(zarr_amount);
 
             std::cout << "Epoch " << epoch + 1 << "/" << config.epochs 
                       << " | Train: " << epoch_train_loss 
-                      << " | Val: " << epoch_val_loss << std::endl;
+                      << " | Val: " << epoch_val_loss << '\n';
 
             // Save the best model based on validation loss
             if (epoch_val_loss < best_val_loss) {
                 best_val_loss = epoch_val_loss;
                 torch::save(model, save_name);
-                std::cout << "--> New best " << stage_name << " model saved!" << std::endl;
+                std::cout << "--> New best " << stage_name << " model saved!" << '\n';
             }
         }
 

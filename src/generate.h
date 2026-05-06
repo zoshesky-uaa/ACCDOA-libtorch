@@ -7,12 +7,10 @@
 // xtensor
 #include <xtensor/containers/xarray.hpp>
 
-// torch
-#include <torch/torch.h>
 
 struct GenerateCmd {
-	std::string device_name = "";
-	std::string zarr_path = ""; // Direct path to a trial zarr, e.g., "data/trial_1.zarr"
+	std::string device_name;
+	std::string zarr_path; // Direct path to a trial zarr, e.g., "data/trial_1.zarr"
 	NLOHMANN_DEFINE_TYPE_INTRUSIVE(GenerateCmd, device_name, zarr_path)
 };
 
@@ -32,31 +30,31 @@ private:
 public:
 	Generate(const GenerateCmd& cmd,
 		SystemConfig& config) :
-		sed_features({ 1, config.mel_bins }, 0.0f),
-		doa_features({ 5, config.mel_bins }, 0.0f),
+		sed_features({ 1, config.mel_bins }, 0.0F),
+		doa_features({ 5, config.mel_bins }, 0.0F),
 		audio_device(cmd.device_name, config),
 		feature_extractor(config, sed_features, doa_features),
 		writer(cmd.zarr_path, config),
 		config(config)
 	{
 		audio_device.start();
-		std::cout << "Intiated: Writing to " << cmd.zarr_path << std::endl;
+		std::cout << "Intiated: Writing to " << cmd.zarr_path << '\n';
 		std::this_thread::sleep_for(std::chrono::seconds(1)); 
-		std::cout << "START" << std::endl;
+		std::cout << "START" << '\n';
 		while (config.on.load(std::memory_order_relaxed)) {
 			if (feature_extractor.feature_extract(audio_device)) {
+				std::cout << "TICK:" << tick++ << '\n';
 				writer.add_frame(sed_features, doa_features);
 				if (writer.count >= config.frame_max) {
-					return;
+					break;
 				}
-				std::cout << std::to_string(tick++) << std::endl;
 			}
 		}
 		if (writer.count != config.frame_max) {
-			std::cerr << "Warning: Early termination detected. Potential data loss, delete associated files." << std::endl;
+			std::cerr << "Warning: Early termination detected. Potential data loss, delete associated files." << "\n";
 			return;
 		}
-		std::cout << "END" << std::endl;
+		std::cout << "END" << '\n';
 	}
 
 	~Generate() {

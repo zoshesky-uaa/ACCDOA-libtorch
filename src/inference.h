@@ -11,7 +11,7 @@
 #include <torch/torch.h>
 
 struct InferenceCmd {
-	std::string device_name = "";
+	std::string device_name;
 	NLOHMANN_DEFINE_TYPE_INTRUSIVE(InferenceCmd, device_name)
 };
 
@@ -59,10 +59,10 @@ struct InferenceBuffer {
 
         // 2. Roll the GPU tensor left by 'inference_amount' (Native CUDA operation) (wrapped)
         x_in = torch::roll(x_in, -static_cast<int64_t>(config.inference_amount), /*dims=*/2);
-
+		
         // 3. Safely copy the new chunk to the tail of x_in (Handles CPU->GPU DMA)
-        int64_t tail_start = config.frame_time_seq - config.inference_amount;
-        x_in.narrow(/*dim=*/2, tail_start, config.inference_amount).copy_(chunk_view, /*non_blocking=*/use_cuda);
+        int64_t tail_start = static_cast<int64_t>(config.frame_time_seq - config.inference_amount);
+        x_in.narrow(/*dim=*/2, tail_start, std::make_signed_t<size_t>(config.inference_amount)).copy_(chunk_view, /*non_blocking=*/use_cuda);
     }
 };
 
@@ -91,8 +91,8 @@ public:
 		: config(config),
 		sed_model(config, ModelType::SED),
 		doa_model(config, ModelType::DOA),
-		sed_features({ 1, config.mel_bins }, 0.0f),
-		doa_features({ 5, config.mel_bins }, 0.0f),
+		sed_features({ 1, config.mel_bins }, 0.0F),
+		doa_features({ 5, config.mel_bins }, 0.0F),
 		audio_device(cmd.device_name, config),
 		feature_extractor(config, sed_features, doa_features),
 		sed_buffer(config, ModelType::SED),
@@ -109,9 +109,9 @@ public:
 		// Start audio capture and feature extraction loop
 		audio_device.start();
 		warmup(); // Optional warmup to fill buffers and stabilize performance
-		std::cout << "Models initialized for inference." << std::endl;
+		std::cout << "Models initialized for inference." << '\n';
 		std::this_thread::sleep_for(std::chrono::seconds(1)); 
-		std::cout << "START" << std::endl;
+		std::cout << "START" << '\n';
 		while (config.on.load(std::memory_order_relaxed)) {
 			if (feature_extractor.feature_extract(audio_device)) {
 				bool ready_sed = sed_buffer.add_frame(sed_features);
@@ -122,7 +122,7 @@ public:
 				}
 			}	
 		}
-		std::cout << "END" << std::endl;
+		std::cout << "END" << '\n';
 	}
 
 	void warmup() {

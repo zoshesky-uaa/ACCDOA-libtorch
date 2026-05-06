@@ -8,7 +8,7 @@ import atexit
 try:
     import z5py
 except ModuleNotFoundError:
-    import sys, subprocess, importlib, shutil
+    import subprocess, importlib, shutil
     conda = shutil.which("conda")
     if not conda:
         raise SystemExit("conda not found on PATH, add package manually via \n conda install conda-forge::z5py")
@@ -31,7 +31,7 @@ while (base_path / f"trial_{i}.zarr").exists():
     i += 1
 
 root_group = z5py.File(base_path / f"trial_{i}.zarr", mode='w')
-
+root_group.create_dataset('labels', )
 
 # Intiation configuration sent to application
 config_data = {
@@ -43,7 +43,7 @@ process = subprocess.Popen(
     [str(application_path)],
     cwd=str(repo_root),
     stdin=subprocess.PIPE,
-    stdout=None,   # inherit terminal (visible)
+    stdout=subprocess.PIPE,   # Intercept stdout instead of skipping it
     stderr=None,   # inherit terminal (visible)
     text=True
 )
@@ -59,4 +59,25 @@ def send_exit():
 atexit.register(send_exit)
 process.stdin.write(json.dumps(config_data) + "\n")
 process.stdin.flush()
-process.wait()
+
+# Read the process output using a standard iterator (yields lines as they appear)
+started = False
+for line in process.stdout:
+    line = line.strip()
+    if not line:
+        continue
+    match line:
+        case "START":
+            print("\n[Python] Intercepted START.")
+            #self.tick.start()
+            #self.fsm.writer.start()
+            #self.threads.append(self.fsm.writer)
+            started = True
+        case "END":
+            print("\n[Python] Intercepted END. Sequence complete.")
+            break 
+        case line if started and line.isdigit():
+            #self.tick.advance_frame()
+            pass
+        case _:
+            continue

@@ -29,8 +29,6 @@ set(_VCPKG_TRIPLET_DIR "${VCPKG_INSTALLED_DIR}/${VCPKG_TARGET_TRIPLET}")
 # Feed z5's FindBLOSC.cmake search vars
 set(BLOSC_SEARCH_HEADER_PATHS "${_VCPKG_TRIPLET_DIR}/include" CACHE STRING "" FORCE)
 set(BLOSC_SEARCH_LIB_PATH     "${_VCPKG_TRIPLET_DIR}/lib"     CACHE STRING "" FORCE)
-
-# Also hard-pin resolved values to bypass stale NOTFOUND cache
 set(BLOSC_INCLUDE_DIR "${_VCPKG_TRIPLET_DIR}/include" CACHE PATH "" FORCE)
 set(BLOSC_LIBRARIES   "${_VCPKG_TRIPLET_DIR}/lib/blosc.lib" CACHE FILEPATH "" FORCE)
 
@@ -49,16 +47,71 @@ set(WITH_ZSTD ON CACHE BOOL "" FORCE)
 FetchContent_Declare(z5 GIT_REPOSITORY https://github.com/constantinpape/z5 GIT_TAG master)
 FetchContent_MakeAvailable(z5)
 
-add_library(accdoa_core INTERFACE)
+# Common flags for all binaries
+add_library(accdoa_common_flags INTERFACE)
+target_include_directories(accdoa_common_flags INTERFACE ${CMAKE_CURRENT_SOURCE_DIR}/src)
 
-target_include_directories(accdoa_core INTERFACE 
-    ${CMAKE_CURRENT_SOURCE_DIR}/src
-    ${MINIAUDIO_INCLUDE_DIRS}
+target_compile_definitions(accdoa_common_flags INTERFACE 
+    NOMINMAX             
+    _USE_MATH_DEFINES
+    KFR_BASETYPE_F32    
+    CMK_AVX2         
+    _HAS_CXX20=1       
+)
+
+target_compile_options(accdoa_common_flags INTERFACE 
+    /utf-8
+    -mavx2                 
+    /bigobj                      
+    -Wno-deprecated-declarations 
+    /std:c++20
+    /EHsc
+)
+
+
+# --- Generator Library (No Torch) ---
+add_library(accdoa_lib_gen INTERFACE)
+target_link_libraries(accdoa_lib_gen INTERFACE 
+    accdoa_common_flags
+    xtl    
+    xtensor::use_xsimd
+    ZLIB::ZLIB
+    kfr 
+    kfr_io 
+    kfr_dft 
+    kfr_dsp
+    kfr_audio
+    blosc_shared
+    zstd::libzstd
+    nlohmann_json::nlohmann_json
+    z5
+)
+target_include_directories(accdoa_lib_gen INTERFACE ${MINIAUDIO_INCLUDE_DIRS})
+# Pass macro to drop Torch headers in generator build (requires matching #ifdef)
+target_compile_definitions(accdoa_lib_gen INTERFACE ACCDOA_NO_TORCH)
+
+# --- Training Library (No Miniaudio / KFR) ---
+add_library(accdoa_lib_train INTERFACE)
+target_link_libraries(accdoa_lib_train INTERFACE 
+    accdoa_common_flags
+    xtl    
+    xtensor::use_xsimd
+    ZLIB::ZLIB
+    blosc_shared
+    zstd::libzstd
+    nlohmann_json::nlohmann_json
+    z5
+    ${TORCH_LIBRARIES}
+)
+target_include_directories(accdoa_lib_train INTERFACE 
     ${TORCH_INSTALL_PREFIX}/include
     ${TORCH_INSTALL_PREFIX}/include/torch/csrc/api/include
 )
 
-target_link_libraries(accdoa_core INTERFACE 
+# --- Inference Library (Everything included) ---
+add_library(accdoa_lib_infer INTERFACE)
+target_link_libraries(accdoa_lib_infer INTERFACE 
+    accdoa_common_flags
     xtl    
     xtensor::use_xsimd
     ZLIB::ZLIB
@@ -73,51 +126,57 @@ target_link_libraries(accdoa_core INTERFACE
     z5
     ${TORCH_LIBRARIES}
 )
-
-target_compile_definitions(accdoa_core INTERFACE 
-    NOMINMAX             
-    _USE_MATH_DEFINES
-    KFR_BASETYPE_F32    
-    CMK_AVX2         
-    _HAS_CXX20=1       # ADD THIS: Forces MSVC to expose all C++20 
+target_include_directories(accdoa_lib_infer INTERFACE 
+    ${MINIAUDIO_INCLUDE_DIRS}
+    ${TORCH_INSTALL_PREFIX}/include
+    ${TORCH_INSTALL_PREFIX}/include/torch/csrc/api/include
 )
 
-target_compile_options(accdoa_core INTERFACE 
-    /utf-8
-    -mavx2                       
-    /bigobj                      
-    -Wno-deprecated-declarations 
-    /std:c++20
-    /EHsc
+add_executable(accdoa_gen src/gen_main.cpp src/generate.h)
+target_link_libraries(accdoa_gen PRIVATE accdoa_lib_gen)
+
+add_executable(accdoa_train src/train_main.cpp src/train.h)
+target_link_libraries(accdoa_train PRIVATE accdoa_lib_train)
+
+add_executable(accdoa_infer src/infer_main.cpp src/inference.h)
+target_link_libraries(accdoa_infer PRIVATE accdoa_lib_infer)
+
+if(POLICY CMP0207)
+    cmake_policy(SET CMP0207 NEW)
+endif()
+
+set_property(TARGET accdoa_gen   PROPERTY RUNTIME_DEPENDENCY_SET gen_deps)
+set_property(TARGET accdoa_train PROPERTY RUNTIME_DEPENDENCY_SET train_deps)
+set_property(TARGET accdoa_infer PROPERTY RUNTIME_DEPENDENCY_SET infer_deps)
+
+# By adding the COMPONENT tag, CPack will allow you to generate distinct 
+# package zips/installers for Generate, Train, and Inference standalone.
+
+install(TARGETS accdoa_gen   RUNTIME_DEPENDENCY_SET gen_deps   RUNTIME DESTINATION Generate_Package/bin COMPONENT Generate_Package)
+install(TARGETS accdoa_train RUNTIME_DEPENDENCY_SET train_deps RUNTIME DESTINATION Train_Package/bin    COMPONENT Train_Package)
+install(TARGETS accdoa_infer RUNTIME_DEPENDENCY_SET infer_deps RUNTIME DESTINATION Infer_Package/bin    COMPONENT Infer_Package)
+
+# Define regex patterns to filter out virtual API sets and system-level DLLs
+set(API_SET_EXCLUDES "^(api|ext)-ms-.*")
+set(SYSTEM_DIR_EXCLUDES "^[A-Za-z]:[\\\\/][Ww][Ii][Nn][Dd][Oo][Ww][Ss][\\\\/].*")
+
+# Install the actual runtime dependencies (vcpkg DLLs, etc.) but ignore Windows system files
+install(RUNTIME_DEPENDENCY_SET gen_deps   
+    DESTINATION Generate_Package/bin COMPONENT Generate_Package
+    PRE_EXCLUDE_REGEXES ${API_SET_EXCLUDES}
+    POST_EXCLUDE_REGEXES ${SYSTEM_DIR_EXCLUDES}
 )
 
-# The Executables
-add_executable(accdoa_gen 
-    src/gen_main.cpp 
-    src/generate.h   
+install(RUNTIME_DEPENDENCY_SET train_deps 
+    DESTINATION Train_Package/bin COMPONENT Train_Package
+    DIRECTORIES "${TORCH_INSTALL_PREFIX}/lib" "${TORCH_INSTALL_PREFIX}/bin"
+    PRE_EXCLUDE_REGEXES ${API_SET_EXCLUDES}
+    POST_EXCLUDE_REGEXES ${SYSTEM_DIR_EXCLUDES}
 )
-target_link_libraries(accdoa_gen PRIVATE accdoa_core)
 
-add_executable(accdoa_train 
-    src/train_main.cpp 
-    src/train.h     
+install(RUNTIME_DEPENDENCY_SET infer_deps 
+    DESTINATION Infer_Package/bin COMPONENT Infer_Package
+    DIRECTORIES "${TORCH_INSTALL_PREFIX}/lib" "${TORCH_INSTALL_PREFIX}/bin" 
+    PRE_EXCLUDE_REGEXES ${API_SET_EXCLUDES}
+    POST_EXCLUDE_REGEXES ${SYSTEM_DIR_EXCLUDES}
 )
-target_link_libraries(accdoa_train PRIVATE accdoa_core)
-
-add_executable(accdoa_infer 
-    src/infer_main.cpp 
-    src/inference.h  
-)
-target_link_libraries(accdoa_infer PRIVATE accdoa_core)
-
-file(GLOB TORCH_DLLS "${TORCH_INSTALL_PREFIX}/lib/*.dll")
-
-foreach(tgt accdoa_gen accdoa_train accdoa_infer)
-    set_property(TARGET ${tgt} PROPERTY COMPILE_FLAGS "${TORCH_CXX_FLAGS}")
-    
-    add_custom_command(TARGET ${tgt} POST_BUILD
-        COMMAND ${CMAKE_COMMAND} -E copy_if_different
-        ${TORCH_DLLS}
-        $<TARGET_FILE_DIR:${tgt}>
-    )
-endforeach()

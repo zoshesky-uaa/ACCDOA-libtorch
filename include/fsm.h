@@ -10,7 +10,7 @@ struct Chunk {
 
     Chunk(int chunk_sz, int mel_bins)
         : sed_features({ (size_t)1, (size_t)chunk_sz, (size_t)mel_bins }),
-        doa_features({ (size_t)5, (size_t)chunk_sz, (size_t)mel_bins }) {
+        doa_features({ (size_t)5, (size_t)chunk_sz, (size_t)mel_bins }) { 
     }
 };
 
@@ -36,21 +36,21 @@ class Writer {
 		int current_local_idx = 0;
 
 		// Maximum number of chunks (or tasks) that can be queued for writing at once.
-		int task_limit = 8; 
+        int task_limit = 50; 
 		Chunk* active_chunk = nullptr;
 		ma_rb task_queue;
         ma_rb free_pool;
         std::thread worker;
 
 		// Helper functions to acquire task pointers from the ring buffers
-        static bool rb_acquire_read_task_ptr(ma_rb& rb, void*& ptr) {
+        static bool rb_acquire_read_task_ptr(ma_rb& ring_buffer, void*& ptr) {
             size_t bytes = sizeof(Chunk*);
-            return ma_rb_acquire_read(&rb, &bytes, &ptr) == MA_SUCCESS && bytes == sizeof(Chunk*);
+            return ma_rb_acquire_read(&ring_buffer, &bytes, &ptr) == MA_SUCCESS && bytes == sizeof(Chunk*);
         }
 
-        static bool rb_acquire_write_task_ptr(ma_rb& rb, void*& ptr) {
+        static bool rb_acquire_write_task_ptr(ma_rb& ring_buffer, void*& ptr) {
             size_t bytes = sizeof(Chunk*);
-            return ma_rb_acquire_write(&rb, &bytes, &ptr) == MA_SUCCESS && bytes == sizeof(Chunk*);
+            return ma_rb_acquire_write(&ring_buffer, &bytes, &ptr) == MA_SUCCESS && bytes == sizeof(Chunk*);
         }
 
         void thread_loop() {
@@ -58,7 +58,7 @@ class Writer {
                 void* readPtr;
                 Chunk* full_chunk = nullptr;
                 if (rb_acquire_read_task_ptr(task_queue, readPtr)) {
-                    std::memcpy(&full_chunk, readPtr, sizeof(Chunk*));
+                    full_chunk = *reinterpret_cast<Chunk**>(readPtr);
                     ma_rb_commit_read(&task_queue, sizeof(Chunk*));
                     // Write the chunks to the respective datasets at the correct offset
                     sed_featureset.write(full_chunk->sed_features);
@@ -66,7 +66,7 @@ class Writer {
                     // Write an empty task pointer back to the free pool for reuse.
                     void* writePtr;
                     if (rb_acquire_write_task_ptr(free_pool, writePtr)) {
-                        std::memcpy(writePtr, &full_chunk, sizeof(Chunk*));
+                        *reinterpret_cast<Chunk**>(writePtr) = full_chunk;
                         ma_rb_commit_write(&free_pool, sizeof(Chunk*));
                     }
                 }
@@ -76,7 +76,7 @@ class Writer {
             }
         };
     public:
-        int count = 0;
+        size_t count = 0;
         DatasetProcessor sed_featureset;
         DatasetProcessor doa_featureset;
 
@@ -85,16 +85,18 @@ class Writer {
             root(z5::filesystem::handle::File(path)),
             sed_featureset(DatasetProcessor(root, "sed_features", ModelType::SED, config, DatasetType::SED_FEATURES)),
             doa_featureset(DatasetProcessor(root, "doa_features", ModelType::DOA, config, DatasetType::DOA_FEATURES)) {
-			// Initialize ring buffers for task management
-            ma_rb_init_ex(sizeof(Chunk*), task_limit, 0, nullptr, nullptr, &task_queue);
-            ma_rb_init_ex(sizeof(Chunk*), task_limit, 0, nullptr, nullptr, &free_pool);
-
+			
+            size_t total_buffer_size = sizeof(Chunk*) * task_limit;
+            // Initialize ring buffers for task management
+            ma_rb_init_ex(total_buffer_size, task_limit, 0, nullptr, nullptr, &task_queue);
+            ma_rb_init_ex(total_buffer_size, task_limit, 0, nullptr, nullptr, &free_pool);
+            
             for (int i = 0; i < task_limit; ++i) {
-                auto t = std::make_unique<Chunk>(config.frame_time_seq, config.mel_bins);
-                void* writePtr; size_t sz = sizeof(Chunk*);
-                if (ma_rb_acquire_write(&free_pool, &sz, &writePtr) == MA_SUCCESS && sz == sizeof(Chunk*)) {
-                    Chunk* raw_ptr = t.release();
-                    std::memcpy(writePtr, &raw_ptr, sizeof(Chunk*));
+                auto pchunk = std::make_unique<Chunk>(config.frame_time_seq, config.mel_bins);
+                void* writePtr; size_t size = sizeof(Chunk*);
+                if (ma_rb_acquire_write(&free_pool, &size, &writePtr) == MA_SUCCESS && size == sizeof(Chunk*)) {
+                    Chunk* raw_ptr = pchunk.release();
+                    *reinterpret_cast<Chunk**>(writePtr) = raw_ptr;
                     ma_rb_commit_write(&free_pool, sizeof(Chunk*));
                 }
                 else {
@@ -110,7 +112,7 @@ class Writer {
                 // Acquire a new task pointer from the free pool
                 void* readPtr;
                 if (rb_acquire_read_task_ptr(free_pool, readPtr)) {
-                    std::memcpy(&active_chunk, readPtr, sizeof(Chunk*));
+                    active_chunk = *reinterpret_cast<Chunk**>(readPtr);
                     ma_rb_commit_read(&free_pool, sizeof(Chunk*));
                 }
                 else {
@@ -126,8 +128,16 @@ class Writer {
             if (current_local_idx >= config.frame_time_seq) {
                 void* writePtr;
                 if (rb_acquire_write_task_ptr(task_queue, writePtr)) {
-                    std::memcpy(writePtr, &active_chunk, sizeof(Chunk*));
+                    *reinterpret_cast<Chunk**>(writePtr) = active_chunk;
                     ma_rb_commit_write(&task_queue, sizeof(Chunk*));
+                } else {
+                    // Buffer Full! Return the active chunk to the free pool to prevent a memory leak.
+                    std::cerr << "Warning: Disk write bottleneck. Dropping chunk." << '\n';
+                    void* freePtr;
+                    if (rb_acquire_write_task_ptr(free_pool, freePtr)) {
+                        *reinterpret_cast<Chunk**>(freePtr) = active_chunk;
+                        ma_rb_commit_write(&free_pool, sizeof(Chunk*));
+                    }
                 }
 
 				// Drop active task pointer and local index for the next chunk
@@ -139,25 +149,23 @@ class Writer {
         }
 
         ~Writer() {
-            if (worker.joinable()) worker.join();
+            if (worker.joinable()) { worker.join(); }
 
 			// Clean up the active chunk if it exists
-            if (active_chunk != nullptr) delete active_chunk;
+            delete active_chunk;
 
             // Clean up any remaining tasks in the free pool and task queue
             void* readPtr; Chunk* chunk_to_delete = nullptr;
             while (rb_acquire_read_task_ptr(free_pool, readPtr)) {
-                std::memcpy(&chunk_to_delete, readPtr, sizeof(Chunk*));
+                chunk_to_delete = *reinterpret_cast<Chunk**>(readPtr);
                 ma_rb_commit_read(&free_pool, sizeof(Chunk*));
                 delete chunk_to_delete;
-                chunk_to_delete = nullptr;
             }
 
             while (rb_acquire_read_task_ptr(task_queue, readPtr)) {
-                std::memcpy(&chunk_to_delete, readPtr, sizeof(Chunk*));
+                chunk_to_delete = *reinterpret_cast<Chunk**>(readPtr);
                 ma_rb_commit_read(&task_queue, sizeof(Chunk*));
                 delete chunk_to_delete;
-                chunk_to_delete = nullptr;
             }
 
             ma_rb_uninit(&task_queue);

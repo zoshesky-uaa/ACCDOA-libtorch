@@ -1,0 +1,18 @@
+# Inspector settings for clangd to more easily see the codebase with torch flags.
+CompileFlags:
+  Compiler: C:/Program Files/Microsoft Visual Studio/18/Community/VC/Tools/Llvm/x64/bin/clang-cl.exe
+  Add: [
+    -std=c++20,
+    -mavx2,
+    -D_HAS_CXX20=1,
+    -Wno-deprecated-declarations,
+    "-IE:/C++Projects/ACCDOA-libtorch/external/libtorch/include",
+    "-IE:/C++Projects/ACCDOA-libtorch/external/libtorch/include/torch/csrc/api/include"
+  ]
+  CompilationDatabase: out/build/x64-debug
+  Remove: [-DACCDOA_NO_TORCH]
+
+Diagnostics:
+  ClangTidy:
+    Add: [bugprone-*, performance-*, readability-*]
+    Remove: [modernize-use-trailing-return-type, readability-magic-numbers, bugprone-easily-swappable-parameters]

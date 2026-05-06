@@ -1,5 +1,5 @@
-﻿{
-  "version": 3,
+{
+  "version": 6,
   "configurePresets": [
     {
       "name": "windows-base",
@@ -58,6 +58,20 @@
       "cacheVariables": {
         "CMAKE_BUILD_TYPE": "Release"
       }
+    }
+  ],
+  "buildPresets": [
+    {
+      "name": "all-debug",
+      "configurePreset": "x64-debug",
+      "displayName": "Build All (Debug)",
+      "targets": ["accdoa_gen", "accdoa_train", "accdoa_infer"]
+    },
+    {
+      "name": "all-release",
+      "configurePreset": "x64-release",
+      "displayName": "Build All (Release)",
+      "targets": ["accdoa_gen", "accdoa_train", "accdoa_infer"]
     }
   ]
 }
