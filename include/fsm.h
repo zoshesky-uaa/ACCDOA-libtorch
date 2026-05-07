@@ -54,12 +54,16 @@ class Writer {
         }
 
         void thread_loop() {
-            while (config.on) {
+            while (true) {
                 void* readPtr;
                 Chunk* full_chunk = nullptr;
                 if (rb_acquire_read_task_ptr(task_queue, readPtr)) {
                     full_chunk = *reinterpret_cast<Chunk**>(readPtr);
                     ma_rb_commit_read(&task_queue, sizeof(Chunk*));
+                    // Queue is fully drained. Safely exit the thread.
+                    if (full_chunk == nullptr) {
+                        break; 
+                    }
                     // Write the chunks to the respective datasets at the correct offset
                     sed_featureset.write(full_chunk->sed_features);
                     doa_featureset.write(full_chunk->doa_features);
@@ -149,6 +153,14 @@ class Writer {
         }
 
         ~Writer() {
+            // Block untill room in the task queue to write a nullptr to kill the loop
+            void* writePtr;
+            while (!rb_acquire_write_task_ptr(task_queue, writePtr)) {
+                std::this_thread::yield(); 
+            }
+            *reinterpret_cast<Chunk**>(writePtr) = nullptr;
+            ma_rb_commit_write(&task_queue, sizeof(Chunk*));
+
             if (worker.joinable()) { worker.join(); }
 
 			// Clean up the active chunk if it exists
@@ -159,12 +171,6 @@ class Writer {
             while (rb_acquire_read_task_ptr(free_pool, readPtr)) {
                 chunk_to_delete = *reinterpret_cast<Chunk**>(readPtr);
                 ma_rb_commit_read(&free_pool, sizeof(Chunk*));
-                delete chunk_to_delete;
-            }
-
-            while (rb_acquire_read_task_ptr(task_queue, readPtr)) {
-                chunk_to_delete = *reinterpret_cast<Chunk**>(readPtr);
-                ma_rb_commit_read(&task_queue, sizeof(Chunk*));
                 delete chunk_to_delete;
             }
 

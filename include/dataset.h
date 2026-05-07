@@ -31,13 +31,11 @@ struct DatasetProcessor {
 
     void write(const xt::xtensor<float, 3>& data) {
         ds->writeChunk(write_chunk, data.data());
-        std::cout << "Write chunk at offset: [" << write_chunk[1] << "]" << '\n';
         write_chunk[1]++;
     }
 
     void read() {
         ds->readChunk(read_chunk, read_buffer.data());
-        std::cout << "Read chunk at offset: [" << read_chunk[1] << "]" << '\n';
         read_chunk[1]++;
     }
 

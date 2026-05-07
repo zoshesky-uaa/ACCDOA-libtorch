@@ -126,35 +126,43 @@ class FeatureExtractor {
 
 		// Scratch space for intermediate calculations
 		kfr::univector<float> r_window = kfr::univector<float>(config.fft_size);
-		kfr::univector<float> mag_temp = kfr::univector<float>(config.fft_bins);
+		kfr::univector<float> linear_x_power = kfr::univector<float>(config.fft_bins);
+		kfr::univector<float> linear_y_power = kfr::univector<float>(config.fft_bins);
+		kfr::univector<float> linear_w_power = kfr::univector<float>(config.fft_bins);
+		kfr::univector<float> linear_total_energy = kfr::univector<float>(config.fft_bins);
+		kfr::univector<float> cross_x_power = kfr::univector<float>(config.fft_bins);
+		kfr::univector<float> cross_y_power = kfr::univector<float>(config.fft_bins);
 		kfr::univector<float> mel_temp = kfr::univector<float>(config.mel_bins);
-		kfr::univector<float> linear_temp = kfr::univector<float>(config.fft_bins);
-		kfr::univector<kfr::complex<float>> conj_temp = kfr::univector<kfr::complex<float>>(config.fft_bins);
-
-		void log_mel_normalize(kfr::univector_ref<kfr::complex<float>> freqs, float* mel_ptr) {
-			mag_temp = kfr::cabs(freqs);
-			for (size_t mel_idx = 0; mel_idx < config.mel_bins; ++mel_idx) {
-				mel_temp[mel_idx] = kfr::dotproduct(mag_temp, mel.filters[mel_idx]);
-			}
-			kfr::univector_ref<float> mel_out(mel_ptr, config.mel_bins);
-			mel_out = kfr::log10(mel_temp + 1e-7F); 
+		kfr::univector<kfr::complex<float>> conj_w = kfr::univector<kfr::complex<float>>(config.fft_bins);
+		
+		void log_mel_normalize(kfr::univector_ref<float> linear_power, float* mel_ptr) {
+			// 1. Dot product the pre-calculated Power array with the Mel filters
+            for (size_t mel_idx = 0; mel_idx < config.mel_bins; ++mel_idx) {
+                mel_temp[mel_idx] = kfr::dotproduct(linear_power, mel.filters[mel_idx]);
+            }
+            
+            kfr::univector_ref<float> mel_out(mel_ptr, config.mel_bins);
+            
+            // 2. Take the log, and multiply by 0.5 to convert the Log-Power 
+            // back to the original Log-Magnitude scale expected by the network.
+            mel_out = 0.5F * kfr::log10(mel_temp + 1e-14F);
 		};
 
-		void calc_mel_iv(kfr::univector_ref<kfr::complex<float>> w_freqs,
-			kfr::univector_ref<kfr::complex<float>> conj_w,
-			kfr::univector_ref<kfr::complex<float>> directional,
-			float* iv_ptr) {
-			kfr::univector_ref<float> iv_out(iv_ptr, config.mel_bins);
-			linear_temp = kfr::real(conj_w * directional) / (kfr::cabssqr(w_freqs) + 1e-7F); 
-			// Compress the linear intensity vector into Mel bands for consistency
-			for (size_t mel_idx = 0; mel_idx < config.mel_bins; ++mel_idx) {
-				// Sum of the current triangular filter weights
-				float filter_sum = kfr::sum(mel.filters[mel_idx]);
+		void calc_mel_iv(kfr::univector_ref<const float> linear_energy_total,
+            kfr::univector_ref<const float> linear_cross_power,
+            float* iv_ptr) {
+            
+            kfr::univector_ref<float> iv_out(iv_ptr, config.mel_bins);
 
-				// Dot product the linear IV with the filter, then normalize by the filter sum
-				iv_out[mel_idx] = kfr::dotproduct(linear_temp, mel.filters[mel_idx]) / (filter_sum + 1e-7F); 
-			}
-		}
+            for (size_t mel_idx = 0; mel_idx < config.mel_bins; ++mel_idx) {
+                // 1. Smooth BOTH the cross-power and total energy into Mel bands
+                float mel_cross = kfr::dotproduct(linear_cross_power, mel.filters[mel_idx]);
+                float mel_total = kfr::dotproduct(linear_energy_total, mel.filters[mel_idx]);
+
+                // 2. Divide. Because we used Total Energy, this physically cannot exceed [-1.0, 1.0]
+                iv_out[mel_idx] = mel_cross / (mel_total + 1e-7F);
+            }
+        };
 
 		void extract(std::vector<float>& buffer) {
 			// Assumption: Hop length is half the FFT size.
@@ -178,21 +186,25 @@ class FeatureExtractor {
 			w_freq = ch_freqs[1] + ch_freqs[0] + ch_freqs[3] + ch_freqs[2]; // Omni
 			x_freq = (ch_freqs[1] + ch_freqs[0]) - (ch_freqs[3] + ch_freqs[2]); // Front-Back
 			y_freq = (ch_freqs[1] + ch_freqs[3]) - (ch_freqs[0] + ch_freqs[2]); // Left-Right
-			kfr::univector_ref<kfr::complex<float>> conj_w(conj_temp.data(), config.fft_bins);
 			conj_w = kfr::cconj(w_freq);
+			linear_w_power = kfr::cabssqr(w_freq);
+			linear_x_power = kfr::cabssqr(x_freq);
+			linear_y_power = kfr::cabssqr(y_freq);
+			linear_total_energy = linear_w_power + ((linear_x_power + linear_y_power) / 2.0F);
+			cross_x_power = kfr::real(conj_w * x_freq);
+			cross_y_power = kfr::real(conj_w * y_freq);
 
 			// --- 1. SED Features (1 Channel: Logmel Omni) ---
-			log_mel_normalize(w_freq, xt::row(sed_features, 0).data());
+            log_mel_normalize(linear_w_power, &sed_features(0, 0));
 
-			// --- 2. DOAE Features (5 Channels) ---
-			// 1-3. Logmel features for W, X, Y
-			log_mel_normalize(w_freq, xt::row(doa_features, 0).data());
-			log_mel_normalize(x_freq, xt::row(doa_features, 1).data());
-			log_mel_normalize(y_freq, xt::row(doa_features, 2).data());
+            // --- 2. DOAE Features (5 Channels) ---
+            log_mel_normalize(linear_w_power, &doa_features(0, 0));
+            log_mel_normalize(linear_x_power, &doa_features(1, 0));
+            log_mel_normalize(linear_y_power, &doa_features(2, 0));
 
-			// 4-5. Intensity Vectors for X, Y
-			calc_mel_iv(w_freq, conj_w, x_freq, xt::row(doa_features, 3).data());
-			calc_mel_iv(w_freq, conj_w, y_freq, xt::row(doa_features, 4).data());
+            // 4-5. Intensity Vectors for X, Y
+            calc_mel_iv(linear_total_energy, cross_x_power, &doa_features(3, 0));
+            calc_mel_iv(linear_total_energy, cross_y_power, &doa_features(4, 0));
 		};
 
 	public:
