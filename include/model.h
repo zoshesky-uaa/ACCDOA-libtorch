@@ -130,19 +130,26 @@ struct M2M_ASTImpl : torch::nn::Module {
         torch::Tensor x_in;
         torch::Tensor sed_target;
         torch::Tensor doa_target;
+        int train_batch = static_cast<int>((config.batch_amount * 4) / 5);
+        int val_batch   = static_cast<int>(config.batch_amount - train_batch);
         float total_train_loss = 0.0F;
-        this->train();
-        // Training loop per epoch
-        for (int batch_idx = 0; batch_idx < (config.batch_amount-1) && config.on.load(); ++batch_idx) {
+        float total_val_loss = 0.0F;
+
+        auto fetch_batch = [&]() {
             if (this->model_type == ModelType::SED) {
                 x_in = sed_featureset->batch();
                 sed_target = sed_labelset->batch();
-            }
-            else {
+            } else {
                 x_in = doa_featureset->batch();
                 doa_target = doa_labelset->batch();
                 sed_target = sed_labelset->batch();
             }
+        };
+        this->train();
+        // Training loop per epoch
+        for (int batch_idx = 0; batch_idx < train_batch && config.on.load(); ++batch_idx) {
+            fetch_batch();
+            
             this->optimizer->zero_grad();
             torch::Tensor prediction = this->forward(x_in);
             torch::Tensor loss = this->loss(prediction, sed_target, doa_target);
@@ -156,25 +163,26 @@ struct M2M_ASTImpl : torch::nn::Module {
 
         // Validation loop per epoch
         this->eval();
-        torch::NoGradGuard no_grad;
-        if (this->model_type == ModelType::SED) {
-            x_in = sed_featureset->batch();
-            sed_target = sed_labelset->batch();
+        {
+            torch::NoGradGuard no_grad;
+            for (int i = 0; i < val_batch && config.on.load(); ++i) {
+                fetch_batch();
+                
+                torch::Tensor val_prediction = this->forward(x_in);
+                torch::Tensor val_loss = this->loss(val_prediction, sed_target, doa_target);
+                total_val_loss += val_loss.to(torch::kFloat32).item<float>();
+            }
         }
-        else {
-            x_in = doa_featureset->batch();
-            doa_target = doa_labelset->batch();
-            sed_target = sed_labelset->batch();
-        }
-        torch::Tensor val_prediction = this->forward(x_in);
-        torch::Tensor val_loss = this->loss(val_prediction, sed_target, doa_target);
 
         sed_featureset->read_reset();
         doa_featureset->read_reset();
         sed_labelset->read_reset();
         doa_labelset->read_reset(); 
         // Return average training loss and validation loss for the epoch
-        return {total_train_loss / static_cast<float>(config.batch_amount), val_loss.to(torch::kFloat32).item<float>()};
+        return {
+            total_train_loss / static_cast<float>(train_batch), 
+            total_val_loss / static_cast<float>(val_batch)
+        };
     }
     // WIP will need to make a return
     void inference(torch::Tensor& x_in) {
