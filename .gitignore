@@ -4,3 +4,4 @@
 /external
 /vcpkg_installed
 /trials
+.clangd

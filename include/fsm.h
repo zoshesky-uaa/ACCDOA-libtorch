@@ -3,6 +3,10 @@
 #include "dataset.h"
 // miniaudio
 #include <miniaudio.h>
+// std
+#include <atomic>
+#include <chrono>
+#include <thread>
 
 struct Chunk {
     xt::xtensor<float, 3> sed_features;
@@ -36,11 +40,14 @@ class Writer {
 		int current_local_idx = 0;
 
 		// Maximum number of chunks (or tasks) that can be queued for writing at once.
-        int task_limit = 50; 
+        int task_limit = 100; 
 		Chunk* active_chunk = nullptr;
 		ma_rb task_queue;
         ma_rb free_pool;
         std::thread worker;
+
+        std::atomic<size_t> chunks_enqueued{ 0 };
+        std::atomic<size_t> chunks_dequeued{ 0 };
 
 		// Helper functions to acquire task pointers from the ring buffers
         static bool rb_acquire_read_task_ptr(ma_rb& ring_buffer, void*& ptr) {
@@ -51,6 +58,15 @@ class Writer {
         static bool rb_acquire_write_task_ptr(ma_rb& ring_buffer, void*& ptr) {
             size_t bytes = sizeof(Chunk*);
             return ma_rb_acquire_write(&ring_buffer, &bytes, &ptr) == MA_SUCCESS && bytes == sizeof(Chunk*);
+        }
+
+        void destroy_free_pool() {
+            void* readPtr = nullptr;
+            while (rb_acquire_read_task_ptr(free_pool, readPtr)) {
+                Chunk* chunk_to_delete = *reinterpret_cast<Chunk**>(readPtr);
+                ma_rb_commit_read(&free_pool, sizeof(Chunk*));
+                delete chunk_to_delete;
+            }
         }
 
         void thread_loop() {
@@ -67,6 +83,7 @@ class Writer {
                     // Write the chunks to the respective datasets at the correct offset
                     sed_featureset.write(full_chunk->sed_features);
                     doa_featureset.write(full_chunk->doa_features);
+                    chunks_dequeued.fetch_add(1, std::memory_order_relaxed);
                     // Write an empty task pointer back to the free pool for reuse.
                     void* writePtr;
                     if (rb_acquire_write_task_ptr(free_pool, writePtr)) {
@@ -134,6 +151,7 @@ class Writer {
                 if (rb_acquire_write_task_ptr(task_queue, writePtr)) {
                     *reinterpret_cast<Chunk**>(writePtr) = active_chunk;
                     ma_rb_commit_write(&task_queue, sizeof(Chunk*));
+                    chunks_enqueued.fetch_add(1, std::memory_order_relaxed);
                 } else {
                     // Buffer Full! Return the active chunk to the free pool to prevent a memory leak.
                     std::cerr << "Warning: Disk write bottleneck. Dropping chunk." << '\n';
@@ -153,6 +171,11 @@ class Writer {
         }
 
         ~Writer() {
+            // Wait for the worker to drain all enqueued chunks before sending sentinel.
+            while (chunks_dequeued.load(std::memory_order_relaxed) <
+                chunks_enqueued.load(std::memory_order_relaxed)) {
+                std::this_thread::sleep_for(std::chrono::milliseconds(1));
+            }
             // Block untill room in the task queue to write a nullptr to kill the loop
             void* writePtr;
             while (!rb_acquire_write_task_ptr(task_queue, writePtr)) {
@@ -165,14 +188,7 @@ class Writer {
 
 			// Clean up the active chunk if it exists
             delete active_chunk;
-
-            // Clean up any remaining tasks in the free pool and task queue
-            void* readPtr; Chunk* chunk_to_delete = nullptr;
-            while (rb_acquire_read_task_ptr(free_pool, readPtr)) {
-                chunk_to_delete = *reinterpret_cast<Chunk**>(readPtr);
-                ma_rb_commit_read(&free_pool, sizeof(Chunk*));
-                delete chunk_to_delete;
-            }
+            destroy_free_pool();
 
             ma_rb_uninit(&task_queue);
             ma_rb_uninit(&free_pool);

@@ -90,24 +90,6 @@ target_include_directories(accdoa_lib_gen INTERFACE ${MINIAUDIO_INCLUDE_DIRS})
 # Pass macro to drop Torch headers in generator build (requires matching #ifdef)
 target_compile_definitions(accdoa_lib_gen INTERFACE ACCDOA_NO_TORCH)
 
-# --- Training Library (No Miniaudio / KFR) ---
-add_library(accdoa_lib_train INTERFACE)
-target_link_libraries(accdoa_lib_train INTERFACE 
-    accdoa_common_flags
-    xtl    
-    xtensor::use_xsimd
-    ZLIB::ZLIB
-    blosc_shared
-    zstd::libzstd
-    nlohmann_json::nlohmann_json
-    z5
-    ${TORCH_LIBRARIES}
-)
-target_include_directories(accdoa_lib_train INTERFACE 
-    ${TORCH_INSTALL_PREFIX}/include
-    ${TORCH_INSTALL_PREFIX}/include/torch/csrc/api/include
-)
-
 # --- Inference Library (Everything included) ---
 add_library(accdoa_lib_infer INTERFACE)
 target_link_libraries(accdoa_lib_infer INTERFACE 
@@ -135,9 +117,6 @@ target_include_directories(accdoa_lib_infer INTERFACE
 add_executable(accdoa_gen src/gen_main.cpp src/generate.h)
 target_link_libraries(accdoa_gen PRIVATE accdoa_lib_gen)
 
-add_executable(accdoa_train src/train_main.cpp src/train.h)
-target_link_libraries(accdoa_train PRIVATE accdoa_lib_train)
-
 add_executable(accdoa_infer src/infer_main.cpp src/inference.h)
 target_link_libraries(accdoa_infer PRIVATE accdoa_lib_infer)
 
@@ -146,30 +125,45 @@ if(POLICY CMP0207)
 endif()
 
 set_property(TARGET accdoa_gen   PROPERTY RUNTIME_DEPENDENCY_SET gen_deps)
-set_property(TARGET accdoa_train PROPERTY RUNTIME_DEPENDENCY_SET train_deps)
 set_property(TARGET accdoa_infer PROPERTY RUNTIME_DEPENDENCY_SET infer_deps)
 
 # By adding the COMPONENT tag, CPack will allow you to generate distinct 
 # package zips/installers for Generate, Train, and Inference standalone.
 
 install(TARGETS accdoa_gen   RUNTIME_DEPENDENCY_SET gen_deps   RUNTIME DESTINATION Generate_Package/bin COMPONENT Generate_Package)
-install(TARGETS accdoa_train RUNTIME_DEPENDENCY_SET train_deps RUNTIME DESTINATION Train_Package/bin    COMPONENT Train_Package)
 install(TARGETS accdoa_infer RUNTIME_DEPENDENCY_SET infer_deps RUNTIME DESTINATION Infer_Package/bin    COMPONENT Infer_Package)
 
 # Define regex patterns to filter out virtual API sets and system-level DLLs
 set(API_SET_EXCLUDES "^(api|ext)-ms-.*")
 set(SYSTEM_DIR_EXCLUDES "^[A-Za-z]:[\\\\/][Ww][Ii][Nn][Dd][Oo][Ww][Ss][\\\\/].*")
 
+# 1. Explicitly install LibTorch DLLs
+if(DEFINED TORCH_INSTALL_PREFIX)
+    # Some LibTorch distributions put DLLs in /lib, others in /bin. Check both safely.   
+    install(DIRECTORY "${TORCH_INSTALL_PREFIX}/lib/"
+            DESTINATION Infer_Package/bin COMPONENT Infer_Package
+            FILES_MATCHING PATTERN "*.dll")
+    
+    install(DIRECTORY "${TORCH_INSTALL_PREFIX}/bin/"
+            DESTINATION Infer_Package/bin COMPONENT Infer_Package
+            FILES_MATCHING PATTERN "*.dll")
+endif()
+
+# 2. Explicitly install cuDNN DLLs
+if(DEFINED CUDNN_LIBRARY)
+    # Automatically derive the bin path from the lib path in your preset
+    # e.g., "C:/.../v9.21/lib/13.2/x64/cudnn.lib" -> "C:/.../v9.21/bin/13.2/x64"
+    get_filename_component(CUDNN_LIB_DIR "${CUDNN_LIBRARY}" DIRECTORY)
+    string(REPLACE "/lib/" "/bin/" CUDNN_BIN_DIR "${CUDNN_LIB_DIR}")
+            
+    install(DIRECTORY "${CUDNN_BIN_DIR}/"
+            DESTINATION Infer_Package/bin COMPONENT Infer_Package
+            FILES_MATCHING PATTERN "*.dll")
+endif()
+
 # Install the actual runtime dependencies (vcpkg DLLs, etc.) but ignore Windows system files
 install(RUNTIME_DEPENDENCY_SET gen_deps   
     DESTINATION Generate_Package/bin COMPONENT Generate_Package
-    PRE_EXCLUDE_REGEXES ${API_SET_EXCLUDES}
-    POST_EXCLUDE_REGEXES ${SYSTEM_DIR_EXCLUDES}
-)
-
-install(RUNTIME_DEPENDENCY_SET train_deps 
-    DESTINATION Train_Package/bin COMPONENT Train_Package
-    DIRECTORIES "${TORCH_INSTALL_PREFIX}/lib" "${TORCH_INSTALL_PREFIX}/bin"
     PRE_EXCLUDE_REGEXES ${API_SET_EXCLUDES}
     POST_EXCLUDE_REGEXES ${SYSTEM_DIR_EXCLUDES}
 )

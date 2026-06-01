@@ -2,17 +2,19 @@
 #include "../include/config.h"
 #include "../include/features.h"
 #include "../include/audio.h"
-#include "../include/model.h"
 
 // xtensor
 #include <xtensor/containers/xarray.hpp>
 
 // torch
 #include <torch/torch.h>
+#include <torch/script.h>
 
 struct InferenceCmd {
 	std::string device_name;
-	NLOHMANN_DEFINE_TYPE_INTRUSIVE(InferenceCmd, device_name)
+	std::string sed_model_path;
+	std::string doa_model_path;
+	NLOHMANN_DEFINE_TYPE_INTRUSIVE(InferenceCmd, device_name, sed_model_path, doa_model_path)
 };
 
 struct InferenceBuffer {
@@ -77,35 +79,43 @@ private:
 	AudioDevice audio_device;
 	FeatureExtractor feature_extractor;
 
-	// Model and optimizer
-	M2M_AST sed_model;
-	M2M_AST doa_model;
-
 	// Inference buffers
 	InferenceBuffer sed_buffer;
 	InferenceBuffer doa_buffer;
 
+	// Models
+	torch::jit::script::Module sed_model;
+    torch::jit::script::Module doa_model;
 public:
 	Inference(const InferenceCmd& cmd,
 		SystemConfig& config)
 		: config(config),
-		sed_model(config, ModelType::SED),
-		doa_model(config, ModelType::DOA),
 		sed_features({ 1, config.mel_bins }, 0.0F),
 		doa_features({ 5, config.mel_bins }, 0.0F),
 		audio_device(cmd.device_name, config),
 		feature_extractor(config, sed_features, doa_features),
 		sed_buffer(config, ModelType::SED),
 		doa_buffer(config, ModelType::DOA) {
-
-		// Initialize the model
-		sed_model->init();
-		doa_model->init();
-
-		// Explicitly set models to evaluation mode
-		sed_model->eval(); 
-        doa_model->eval();
 		
+		try {
+            // Deserialize the TorchScript execution graphs natively
+            sed_model = torch::jit::load(cmd.sed_model_path);
+            doa_model = torch::jit::load(cmd.doa_model_path);
+            
+            // Set device location based on compilation environment
+            if (torch::cuda::is_available()) {
+                sed_model.to(torch::kCUDA);
+                doa_model.to(torch::kCUDA);
+            }
+        }
+		catch (const c10::Error& e) {
+            std::cerr << "Fatal: Failed to load standalone TorchScript models: " << e.msg() << std::endl;
+            return;
+        }
+
+		sed_model.eval(); 
+        doa_model.eval();
+
 		// Start audio capture and feature extraction loop
 		audio_device.start();
 		warmup(); // Optional warmup to fill buffers and stabilize performance
@@ -117,8 +127,14 @@ public:
 				bool ready_sed = sed_buffer.add_frame(sed_features);
                 bool ready_doa = doa_buffer.add_frame(doa_features);
 				if (ready_sed && ready_doa) {
-					sed_model->inference(sed_buffer.x_in);
-					doa_model->inference(doa_buffer.x_in);	
+					// Note: forward() takes a vector of IValue (Generic tracking wrappers)
+					std::vector<torch::jit::IValue> sed_inputs;
+                    sed_inputs.push_back(sed_buffer.x_in);
+                    torch::Tensor sed_out = sed_model.forward(sed_inputs).toTensor();
+
+                    std::vector<torch::jit::IValue> doa_inputs;
+                    doa_inputs.push_back(doa_buffer.x_in);
+                    torch::Tensor doa_out = doa_model.forward(doa_inputs).toTensor();
 				}
 			}	
 		}
@@ -135,9 +151,6 @@ public:
 	}
 	~Inference() {
 		config.on.store(false);
-		sed_model = nullptr;
-		doa_model = nullptr;
-
 		// CUDA sync operation (cudaDeviceSynchronize wrapper)
 		if (torch::cuda::is_available()) {
 			torch::cuda::synchronize();

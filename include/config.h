@@ -56,6 +56,11 @@ struct ConfigData {
     int64_t n_f;
     int64_t num_patches;
     int64_t total_seq;
+	float learning_rate;
+	float dropout;
+	float weight_decay;
+	float validation_threshold;
+	float validation_lowest;
 
     // 4. Buffer dimensions
     std::vector<size_t> sed_fet_buffer_dim;
@@ -69,7 +74,9 @@ struct ConfigData {
         epochs, warmup_epochs, batch_amount, channels, time_window, patch_size, patch_overlap, enc_layers,
         att_headers, embed_dim, input_frame_time, frame_time_seq, frame_max, conv_stride, fft_bins, history_size,
         t_prime, label_max, inference_amount, n_t, n_f, num_patches, total_seq,
-        sed_fet_buffer_dim, doa_fet_buffer_dim, sed_label_buffer_dim, doa_label_buffer_dim)
+        sed_fet_buffer_dim, doa_fet_buffer_dim, sed_label_buffer_dim, doa_label_buffer_dim, learning_rate, dropout,
+		weight_decay, validation_threshold, validation_lowest
+	)
 };
 
 struct SystemConfig : public ConfigData {
